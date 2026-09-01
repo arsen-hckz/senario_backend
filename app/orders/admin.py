@@ -17,3 +17,6 @@ class OrderAdmin(admin.ModelAdmin):
     readonly_fields = ('user', 'total', 'created_at')
     list_editable = ('status',)
     inlines = (OrderItemInline,)
+
+
+#force deploy
