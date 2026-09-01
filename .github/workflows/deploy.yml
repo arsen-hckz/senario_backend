@@ -23,6 +23,8 @@ jobs:
             cd /var/www/senario_backend
             git pull origin main
             docker-compose build web
-            docker-compose up -d --force-recreate --no-deps web
+            docker-compose stop web
+            docker-compose rm -f web
+            docker-compose up -d web
             docker-compose exec -T web python manage.py migrate
             docker-compose exec -T web python manage.py collectstatic --noinput
