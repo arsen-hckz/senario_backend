@@ -3,6 +3,7 @@ from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='').split(',')
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost').split(',')
@@ -116,6 +117,11 @@ FILE_UPLOAD_MAX_MEMORY_SIZE  = 5 * 1024 * 1024
 SECURE_BROWSER_XSS_FILTER       = True
 SECURE_CONTENT_TYPE_NOSNIFF     = True
 X_FRAME_OPTIONS                 = 'DENY'
+
+# nginx terminates TLS and forwards this header; without it Django can't tell
+# a request arrived over HTTPS (breaks CSRF cookie security and absolute-URL
+# generation, e.g. verification links, behind the proxy).
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 from datetime import timedelta
 SIMPLE_JWT = {
