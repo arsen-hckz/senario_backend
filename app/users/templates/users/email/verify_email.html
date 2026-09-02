@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify your email</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f5; font-family:Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5; padding:32px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border-radius:8px; overflow:hidden; max-width:480px; width:100%;">
+
+          <!-- Header / logo -->
+          <tr>
+            <td align="center" style="background-color:#000000; padding:32px 24px;">
+              <img src="cid:{{ logo_cid }}" alt="{{ brand_name }}" width="160" style="display:block; max-width:160px; height:auto;">
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:32px 32px 8px 32px; color:#18181b; font-size:16px; line-height:1.6;">
+              <p style="margin:0 0 16px 0;">Hey{% if first_name %} {{ first_name }}{% endif %},</p>
+              <p style="margin:0 0 16px 0;">
+                Welcome to {{ brand_name }}. You're one click away from unlocking your account &mdash;
+                verify your email address to activate it and start ordering.
+              </p>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td align="center" style="padding:8px 32px 32px 32px;">
+              <a href="{{ verification_url }}"
+                 style="display:inline-block; background-color:#000000; color:#ffffff; text-decoration:none;
+                        font-weight:bold; font-size:15px; letter-spacing:0.5px; text-transform:uppercase;
+                        padding:14px 32px; border-radius:4px;">
+                Verify Email
+              </a>
+            </td>
+          </tr>
+
+          <!-- Fallback link -->
+          <tr>
+            <td style="padding:0 32px 32px 32px; color:#71717a; font-size:13px; line-height:1.5;">
+              <p style="margin:0 0 8px 0;">Button not working? Paste this link into your browser:</p>
+              <p style="margin:0; word-break:break-all;"><a href="{{ verification_url }}" style="color:#3f3f46;">{{ verification_url }}</a></p>
+              <p style="margin:16px 0 0 0;">This link expires in {{ expiry_days }} day{{ expiry_days|pluralize }}. If you didn't create an account with us, you can safely ignore this email.</p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="background-color:#f4f4f5; padding:20px; color:#a1a1aa; font-size:12px;">
+              &copy; {{ current_year }} {{ brand_name }}. All rights reserved.
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

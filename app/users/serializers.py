@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
+from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
@@ -19,12 +20,18 @@ class RegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'is_staff', 'created_at')
-        read_only_fields = ('id', 'email', 'is_staff', 'created_at')
+        fields = ('id', 'email', 'first_name', 'last_name', 'is_staff', 'is_email_verified', 'created_at')
+        read_only_fields = ('id', 'email', 'is_staff', 'is_email_verified', 'created_at')
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
+        if not self.user.is_email_verified:
+            raise AuthenticationFailed('Please verify your email address before logging in.', code='email_not_verified')
         data['user'] = UserSerializer(self.user).data
         return data
+
+
+class ResendVerificationEmailSerializer(serializers.Serializer):
+    email = serializers.EmailField()

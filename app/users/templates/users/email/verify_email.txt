@@ -1,0 +1,11 @@
+Hey{% if first_name %} {{ first_name }}{% endif %},
+
+Welcome to {{ brand_name }}. You're one click away from unlocking your account -
+verify your email address to activate it and start ordering.
+
+Verify your email:
+{{ verification_url }}
+
+This link expires in {{ expiry_days }} day{{ expiry_days|pluralize }}. If you didn't create an account with us, you can safely ignore this email.
+
+(c) {{ current_year }} {{ brand_name }}. All rights reserved.

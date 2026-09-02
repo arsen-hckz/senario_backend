@@ -19,11 +19,13 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
+    'anymail',
     # local
     'users',
     'products',
     'orders',
     'cart',
+    'moodboard',
 ]
 
 MIDDLEWARE = [
@@ -102,6 +104,7 @@ REST_FRAMEWORK = {
         'user':     '2000/day',
         'login':    '5/min',
         'register': '10/hour',
+        'resend-verification': '5/hour',
     },
 }
 
@@ -142,3 +145,20 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Email / branding
+BRAND_NAME = config('BRAND_NAME', default='Senario')
+FRONTEND_URL = config('FRONTEND_URL', default='')  # e.g. https://senario.app — if unset, verification links hit the API directly
+EMAIL_VERIFICATION_TIMEOUT_DAYS = config('EMAIL_VERIFICATION_TIMEOUT_DAYS', default=3, cast=int)
+PASSWORD_RESET_TIMEOUT = EMAIL_VERIFICATION_TIMEOUT_DAYS * 24 * 60 * 60
+
+EMAIL_BACKEND = config(
+    'EMAIL_BACKEND',
+    default='django.core.mail.backends.console.EmailBackend' if DEBUG else 'anymail.backends.resend.EmailBackend',
+)
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=f'{BRAND_NAME} <no-reply@senario.app>')
+SUPPORT_EMAIL = config('SUPPORT_EMAIL', default='Senarioproject@gmail.com')
+
+ANYMAIL = {
+    'RESEND_API_KEY': config('RESEND_API_KEY', default=''),
+}

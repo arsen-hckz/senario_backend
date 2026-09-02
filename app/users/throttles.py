@@ -7,3 +7,7 @@ class LoginRateThrottle(ScopedRateThrottle):
 
 class RegisterRateThrottle(ScopedRateThrottle):
     scope = 'register'
+
+
+class ResendVerificationRateThrottle(ScopedRateThrottle):
+    scope = 'resend-verification'

@@ -15,6 +15,7 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email, password, **extra):
         extra.setdefault('is_staff', True)
         extra.setdefault('is_superuser', True)
+        extra.setdefault('is_email_verified', True)
         return self.create_user(email, password, **extra)
 
 
@@ -24,6 +25,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     last_name  = models.CharField(max_length=60, blank=True)
     is_active  = models.BooleanField(default=True)
     is_staff   = models.BooleanField(default=False)
+    is_email_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     USERNAME_FIELD  = 'email'
