@@ -1,6 +1,9 @@
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.utils.encoding import force_str
-from django.utils.http import urlsafe_base64_decode
+from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,6 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .emails import send_verification_email
+from .models import PendingRegistration
 from .serializers import (
     CustomTokenObtainPairSerializer,
     RegisterSerializer,
@@ -16,7 +20,6 @@ from .serializers import (
     UserSerializer,
 )
 from .throttles import LoginRateThrottle, RegisterRateThrottle, ResendVerificationRateThrottle
-from .tokens import email_verification_token
 
 User = get_user_model()
 
@@ -34,10 +37,10 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        send_verification_email(user, request)
+        pending = serializer.save()
+        send_verification_email(pending, request)
         return Response({
-            'user': UserSerializer(user).data,
+            'email': pending.email,
             'detail': 'Registration successful. Check your email to verify your account before logging in.',
         }, status=status.HTTP_201_CREATED)
 
@@ -45,29 +48,26 @@ class RegisterView(generics.CreateAPIView):
 class VerifyEmailView(APIView):
     permission_classes = (permissions.AllowAny,)
 
-    def get(self, request, uidb64, token):
-        user = self._get_user(uidb64)
-        valid = user is not None and email_verification_token.check_token(user, token)
+    def get(self, request, token):
+        cutoff = timezone.now() - timedelta(days=settings.EMAIL_VERIFICATION_TIMEOUT_DAYS)
+        pending = PendingRegistration.objects.filter(token=token, created_at__gte=cutoff).first()
 
-        if not valid:
+        if pending is None:
             return Response(
                 {'detail': 'This verification link is invalid or has expired.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not user.is_email_verified:
-            user.is_email_verified = True
-            user.save(update_fields=['is_email_verified'])
+        user = User(
+            email=pending.email,
+            first_name=pending.first_name,
+            last_name=pending.last_name,
+            password=pending.password_hash,
+        )
+        user.save()
+        pending.delete()
 
         return Response({'detail': 'Email verified successfully.'})
-
-    @staticmethod
-    def _get_user(uidb64):
-        try:
-            uid = force_str(urlsafe_base64_decode(uidb64))
-            return User.objects.get(pk=uid)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            return None
 
 
 class ResendVerificationEmailView(generics.GenericAPIView):
@@ -79,9 +79,12 @@ class ResendVerificationEmailView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user = User.objects.filter(email__iexact=serializer.validated_data['email']).first()
-        if user and not user.is_email_verified:
-            send_verification_email(user, request)
+        pending = PendingRegistration.objects.filter(email__iexact=serializer.validated_data['email']).first()
+        if pending:
+            pending.token = secrets.token_urlsafe(32)
+            pending.created_at = timezone.now()
+            pending.save(update_fields=['token', 'created_at'])
+            send_verification_email(pending, request)
 
         # Always return a generic response so this endpoint can't be used to enumerate accounts.
         return Response({'detail': 'If that email is registered and unverified, a new link has been sent.'})

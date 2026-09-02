@@ -11,11 +11,10 @@ class MoodboardTests(APITestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
             email='staff@example.com', password='testpass123',
-            is_staff=True, is_email_verified=True,
+            is_staff=True,
         )
         self.customer = User.objects.create_user(
             email='customer@example.com', password='testpass123',
-            is_email_verified=True,
         )
 
     def auth(self, user):

@@ -15,6 +15,6 @@ urlpatterns = [
     path('refresh/',  TokenRefreshView.as_view(),         name='auth-refresh'),
     path('profile/',  ProfileView.as_view(),              name='auth-profile'),
     path('logout/',   LogoutView.as_view(),                name='auth-logout'),
-    path('verify-email/<uidb64>/<token>/', VerifyEmailView.as_view(),           name='auth-verify-email'),
+    path('verify-email/<token>/',          VerifyEmailView.as_view(),           name='auth-verify-email'),
     path('resend-verification/',           ResendVerificationEmailView.as_view(), name='auth-resend-verification'),
 ]
