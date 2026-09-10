@@ -7,6 +7,12 @@ class AdminLoginThrottleMiddleware:
 
     The DRF API login endpoint already has ScopedRateThrottle; the admin
     site's own login form has no such protection by default.
+
+    Trusts X-Real-IP as set by nginx. This is only safe because
+    docker-compose never publishes the web service's port to the host —
+    nginx is the sole entrypoint, so this header can't be spoofed by
+    reaching Django directly. If that topology ever changes, this needs
+    to validate the request actually came through a trusted proxy first.
     """
     RATE_LIMIT = 5
     WINDOW_SECONDS = 60

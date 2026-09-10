@@ -3,7 +3,7 @@ from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='').split(',')
+CSRF_TRUSTED_ORIGINS = [o for o in config('CSRF_TRUSTED_ORIGINS', default='').split(',') if o]
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost').split(',')
@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     'orders',
     'cart',
     'moodboard',
+    'payments',
 ]
 
 MIDDLEWARE = [
@@ -118,6 +119,18 @@ SECURE_BROWSER_XSS_FILTER       = True
 SECURE_CONTENT_TYPE_NOSNIFF     = True
 X_FRAME_OPTIONS                 = 'DENY'
 
+# Cookies (admin session + CSRF) and transport hardening — nginx already
+# redirects http->https and terminates TLS, but Django needs these too so
+# the admin session/CSRF cookies are never sent unencrypted and HSTS is
+# actually asserted to browsers.
+if not DEBUG:
+    SESSION_COOKIE_SECURE   = True
+    CSRF_COOKIE_SECURE      = True
+    SECURE_SSL_REDIRECT     = True
+    SECURE_HSTS_SECONDS     = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD     = True
+
 # nginx terminates TLS and forwards this header; without it Django can't tell
 # a request arrived over HTTPS (breaks CSRF cookie security and absolute-URL
 # generation, e.g. verification links, behind the proxy).
@@ -168,3 +181,12 @@ SUPPORT_EMAIL = config('SUPPORT_EMAIL', default='Senarioproject@gmail.com')
 ANYMAIL = {
     'RESEND_API_KEY': config('RESEND_API_KEY', default=''),
 }
+
+# Viva.com (Smart Checkout) payments
+# VIVA_ENV defaults to 'demo' so a misconfigured deploy fails safe into the
+# sandbox rather than silently taking real payments.
+VIVA_ENV = config('VIVA_ENV', default='demo')
+VIVA_CLIENT_ID = config('VIVA_CLIENT_ID', default='')
+VIVA_CLIENT_SECRET = config('VIVA_CLIENT_SECRET', default='')
+VIVA_SOURCE_CODE = config('VIVA_SOURCE_CODE', default='')
+VIVA_WEBHOOK_VERIFICATION_KEY = config('VIVA_WEBHOOK_VERIFICATION_KEY', default='')
