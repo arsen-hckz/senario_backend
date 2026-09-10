@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .image_utils import optimize_image_file
 from .models import MoodboardPhoto
 
 
@@ -14,6 +15,9 @@ class MoodboardPhotoSerializer(serializers.ModelSerializer):
         model = MoodboardPhoto
         fields = ('id', 'title', 'body', 'order', 'image', 'src')
         read_only_fields = ('order',)
+
+    def validate_image(self, value):
+        return optimize_image_file(value, name=value.name)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
