@@ -45,7 +45,7 @@ class CartView(APIView):
 
     def get(self, request):
         cart = self._get_cart(request.user)
-        return Response(CartSerializer(cart).data)
+        return Response(CartSerializer(cart, context={'request': request}).data)
 
     def post(self, request):
         cart = self._get_cart(request.user)
@@ -72,13 +72,13 @@ class CartView(APIView):
         else:
             CartItem.objects.create(cart=cart, product=product, variant=variant, qty=qty)
 
-        return Response(CartSerializer(cart).data, status=status.HTTP_200_OK)
+        return Response(CartSerializer(cart, context={'request': request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request):
         cart = self._get_cart(request.user)
         item_id = request.data.get('item_id')
         get_object_or_404(CartItem, pk=item_id, cart=cart).delete()
-        return Response(CartSerializer(cart).data)
+        return Response(CartSerializer(cart, context={'request': request}).data)
 
 
 class CartItemView(APIView):
@@ -94,7 +94,7 @@ class CartItemView(APIView):
             return _bad_qty()
         if raw <= 0:
             item.delete()
-            return Response(CartSerializer(cart).data)
+            return Response(CartSerializer(cart, context={'request': request}).data)
 
         qty = _parse_qty(raw, minimum=1)
         if qty is None:
@@ -105,4 +105,4 @@ class CartItemView(APIView):
 
         item.qty = qty
         item.save()
-        return Response(CartSerializer(cart).data)
+        return Response(CartSerializer(cart, context={'request': request}).data)
