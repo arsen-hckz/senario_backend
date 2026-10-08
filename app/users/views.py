@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
@@ -50,22 +51,35 @@ class VerifyEmailView(APIView):
 
     def get(self, request, token):
         cutoff = timezone.now() - timedelta(days=settings.EMAIL_VERIFICATION_TIMEOUT_DAYS)
-        pending = PendingRegistration.objects.filter(token=token, created_at__gte=cutoff).first()
 
-        if pending is None:
-            return Response(
-                {'detail': 'This verification link is invalid or has expired.'},
-                status=status.HTTP_400_BAD_REQUEST,
+        with transaction.atomic():
+            # Row lock: a double-click (or a mail scanner prefetching the link)
+            # waits here, then finds the row gone instead of crashing on a
+            # duplicate user.
+            pending = (
+                PendingRegistration.objects.select_for_update()
+                .filter(token=token, created_at__gte=cutoff).first()
             )
+            if pending is None:
+                return Response(
+                    {'detail': 'This verification link is invalid or has expired.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        user = User(
-            email=pending.email,
-            first_name=pending.first_name,
-            last_name=pending.last_name,
-            password=pending.password_hash,
-        )
-        user.save()
-        pending.delete()
+            if User.objects.filter(email__iexact=pending.email).exists():
+                pending.delete()
+                return Response(
+                    {'detail': 'This email is already verified. Please log in.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            User.objects.create(
+                email=pending.email,
+                first_name=pending.first_name,
+                last_name=pending.last_name,
+                password=pending.password_hash,
+            )
+            pending.delete()
 
         return Response({'detail': 'Email verified successfully.'})
 

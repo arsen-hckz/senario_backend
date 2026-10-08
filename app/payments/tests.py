@@ -99,7 +99,7 @@ class PaymentsTests(APITestCase):
     def test_webhook_confirms_payment_order_and_stock_on_verified_transaction(self, mock_get_transaction):
         payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
         mock_get_transaction.return_value = {
-            'orderCode': 999, 'statusId': 'F', 'amount': 2450,
+            'orderCode': 999, 'statusId': 'F', 'amount': 24.5,  # euros, as Viva returns it
         }
 
         res = self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
@@ -117,7 +117,7 @@ class PaymentsTests(APITestCase):
     def test_webhook_ignores_amount_mismatch(self, mock_get_transaction):
         payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
         mock_get_transaction.return_value = {
-            'orderCode': 999, 'statusId': 'F', 'amount': 100,  # wrong amount
+            'orderCode': 999, 'statusId': 'F', 'amount': 1.0,  # wrong amount
         }
 
         res = self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
@@ -143,3 +143,99 @@ class PaymentsTests(APITestCase):
     def test_webhook_ignores_unknown_order_code(self):
         res = self.client.post('/api/payments/webhook/viva/', self._webhook_event('does-not-exist'), format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    @patch('payments.viva_client.get_transaction')
+    def test_webhook_rejects_cents_amount_from_old_assumption(self, mock_get_transaction):
+        """Regression: 2450 'cents' must not match a 24.50 order — Viva returns euros."""
+        payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        mock_get_transaction.return_value = {'orderCode': 999, 'statusId': 'F', 'amount': 2450}
+
+        self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.PENDING)
+
+    def test_to_cents_handles_float_euros_without_drift(self):
+        from .viva_client import to_cents
+        self.assertEqual(to_cents(19.99), 1999)
+        self.assertEqual(to_cents(0.1), 10)
+        self.assertEqual(to_cents(Decimal('24.50')), 2450)
+
+    @patch('payments.viva_client.create_order')
+    def test_checkout_rejects_cancelled_order(self, mock_create_order):
+        self.order.status = Order.Status.CANCELLED
+        self.order.save()
+        self.auth(self.user)
+
+        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        mock_create_order.assert_not_called()
+
+    @patch('payments.viva_client.create_order')
+    def test_checkout_rejects_order_when_stock_ran_out(self, mock_create_order):
+        self.variant.stock = 1  # order wants 2
+        self.variant.save()
+        self.auth(self.user)
+
+        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
+
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        mock_create_order.assert_not_called()
+
+    @patch('payments.viva_client.get_transaction')
+    def test_webhook_records_payment_even_if_oversold(self, mock_get_transaction):
+        """Customer was already charged: a stock shortfall must not abort recording it."""
+        self.variant.stock = 1  # order wants 2
+        self.variant.save()
+        payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        mock_get_transaction.return_value = {'orderCode': 999, 'statusId': 'F', 'amount': 24.5}
+
+        res = self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.order.refresh_from_db()
+        self.variant.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.PAID)
+        self.assertEqual(self.order.status, Order.Status.CONFIRMED)
+        self.assertEqual(self.variant.stock, 0)
+
+    @patch('payments.viva_client.get_transaction')
+    def test_second_payment_for_same_order_is_flagged_for_refund(self, mock_get_transaction):
+        """Customer paid in two tabs: confirm once, decrement stock once, flag the other."""
+        first = Payment.objects.create(order=self.order, viva_order_code='111', amount=self.order.total)
+        second = Payment.objects.create(order=self.order, viva_order_code='222', amount=self.order.total)
+
+        mock_get_transaction.return_value = {'orderCode': 111, 'statusId': 'F', 'amount': 24.5}
+        self.client.post('/api/payments/webhook/viva/', self._webhook_event('111', 'txn-a'), format='json')
+        mock_get_transaction.return_value = {'orderCode': 222, 'statusId': 'F', 'amount': 24.5}
+        self.client.post('/api/payments/webhook/viva/', self._webhook_event('222', 'txn-b'), format='json')
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.variant.refresh_from_db()
+        self.assertEqual(first.status, Payment.Status.PAID)
+        self.assertEqual(second.status, Payment.Status.REFUND_NEEDED)
+        self.assertEqual(second.viva_transaction_id, 'txn-b')
+        self.assertEqual(self.variant.stock, 1)  # decremented once: 3 - 2
+
+    @patch('payments.viva_client.get_transaction')
+    def test_payment_for_cancelled_order_is_flagged_for_refund(self, mock_get_transaction):
+        payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        self.order.status = Order.Status.CANCELLED
+        self.order.save()
+        mock_get_transaction.return_value = {'orderCode': 999, 'statusId': 'F', 'amount': 24.5}
+
+        self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+
+        payment.refresh_from_db()
+        self.order.refresh_from_db()
+        self.variant.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.REFUND_NEEDED)
+        self.assertEqual(self.order.status, Order.Status.CANCELLED)
+        self.assertEqual(self.variant.stock, 3)
+
+    def test_webhook_is_not_rate_limited(self):
+        from .views import VivaWebhookView
+        self.assertEqual(tuple(VivaWebhookView.throttle_classes), ())

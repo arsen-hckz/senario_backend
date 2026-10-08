@@ -16,8 +16,13 @@ _TOKEN_CACHE_KEY = 'viva:access_token'
 
 
 def to_cents(amount):
-    """Decimal currency amount -> integer cents, as Viva's API expects/returns."""
-    return int((Decimal(amount) * 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+    """Currency amount (Decimal, or the float euros Viva's transaction API returns) -> integer cents.
+
+    Viva is inconsistent here: order creation takes integer cents, but
+    Retrieve Transaction returns `amount` as decimal euros (e.g. 30.0).
+    Going through str() keeps floats like 19.99 from turning into 19.98999...
+    """
+    return int((Decimal(str(amount)) * 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
 
 
 class VivaError(Exception):

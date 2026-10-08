@@ -14,6 +14,8 @@ class Payment(models.Model):
         PENDING   = 'pending',   'Pending'
         PAID      = 'paid',      'Paid'
         FAILED    = 'failed',    'Failed'
+        # Charged, but the order was already paid or cancelled — refund it in Viva's portal.
+        REFUND_NEEDED = 'refund_needed', 'Paid — refund needed'
 
     order               = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='payments')
     viva_order_code     = models.CharField(max_length=32, unique=True)

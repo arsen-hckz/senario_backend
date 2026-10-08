@@ -1,7 +1,11 @@
 import secrets
+from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
@@ -24,18 +28,45 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError('An account with this email already exists.')
         return email
 
-    def create(self, validated_data):
-        pending, _ = PendingRegistration.objects.update_or_create(
-            email=validated_data['email'],
-            defaults={
-                'password_hash': make_password(validated_data['password']),
-                'first_name': validated_data.get('first_name', ''),
-                'last_name': validated_data.get('last_name', ''),
-                'token': secrets.token_urlsafe(32),
-                'created_at': timezone.now(),
-            },
+    def validate(self, attrs):
+        # Same strength rules the admin uses (common passwords, all-numeric,
+        # too similar to the name/email) — min_length alone accepted "12345678".
+        candidate = User(
+            email=attrs['email'],
+            first_name=attrs.get('first_name', ''),
+            last_name=attrs.get('last_name', ''),
         )
-        return pending
+        try:
+            validate_password(attrs['password'], user=candidate)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'password': list(exc.messages)})
+        return attrs
+
+    def create(self, validated_data):
+        existing = PendingRegistration.objects.filter(email__iexact=validated_data['email']).first()
+        cutoff = timezone.now() - timedelta(days=settings.EMAIL_VERIFICATION_TIMEOUT_DAYS)
+        if existing and existing.created_at >= cutoff:
+            # A still-valid signup for this address exists: re-send its link
+            # but never let a second signup replace its password. Otherwise
+            # anyone could re-register a victim's address with their own
+            # password, and the victim's click on the newest link would
+            # create the account with the attacker's password.
+            return existing
+
+        data = {
+            'email': validated_data['email'],
+            'password_hash': make_password(validated_data['password']),
+            'first_name': validated_data.get('first_name', ''),
+            'last_name': validated_data.get('last_name', ''),
+            'token': secrets.token_urlsafe(32),
+            'created_at': timezone.now(),
+        }
+        if existing:
+            for field, value in data.items():
+                setattr(existing, field, value)
+            existing.save()
+            return existing
+        return PendingRegistration.objects.create(**data)
 
 
 class UserSerializer(serializers.ModelSerializer):

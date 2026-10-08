@@ -1,5 +1,7 @@
+from django.db import transaction
 from rest_framework import serializers
 from .models import Order, OrderItem
+from .stock import unavailable_items
 from cart.models import Cart
 
 
@@ -34,29 +36,42 @@ class CreateOrderSerializer(serializers.Serializer):
     def validate(self, attrs):
         user = self.context['request'].user
         try:
-            cart = Cart.objects.prefetch_related('items__product').get(user=user)
+            cart = Cart.objects.get(user=user)
         except Cart.DoesNotExist:
             raise serializers.ValidationError('No cart found.')
-        if not cart.items.exists():
+        items = list(cart.items.select_related('product', 'variant'))
+        if not items:
             raise serializers.ValidationError('Your cart is empty.')
+        unavailable = unavailable_items(
+            (item.product.name, item.product, item.variant, item.qty) for item in items
+        )
+        if unavailable:
+            raise serializers.ValidationError(
+                'Some items are no longer available: ' + ', '.join(unavailable)
+            )
         self._cart = cart
+        self._items = items
         return attrs
 
     def create(self, validated_data):
-        cart = self._cart
-        total = cart.total
-        order = Order.objects.create(total=total, **validated_data)
-        for item in cart.items.select_related('product', 'variant').all():
-            OrderItem.objects.create(
-                order=order,
-                product=item.product,
-                variant=item.variant,
-                product_name=item.product.name,
-                size=item.variant.size if item.variant else '',
-                price=item.product.effective_price,
-                qty=item.qty,
-            )
-        cart.items.all().delete()
+        # All-or-nothing: an error halfway must not leave a partial order
+        # behind, or empty the cart without an order to show for it.
+        with transaction.atomic():
+            total = sum(item.product.effective_price * item.qty for item in self._items)
+            order = Order.objects.create(total=total, **validated_data)
+            OrderItem.objects.bulk_create([
+                OrderItem(
+                    order=order,
+                    product=item.product,
+                    variant=item.variant,
+                    product_name=item.product.name,
+                    size=item.variant.size if item.variant else '',
+                    price=item.product.effective_price,
+                    qty=item.qty,
+                )
+                for item in self._items
+            ])
+            self._cart.items.all().delete()
         return order
 
 

@@ -2,14 +2,13 @@ import logging
 
 from django.conf import settings
 from django.db import transaction as db_transaction
-from django.db.models import F
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from orders.models import Order
-from products.models import Product, ProductVariant
+from orders.stock import decrement_order_stock, order_unavailable_items
 
 from . import viva_client
 from .models import Payment
@@ -28,6 +27,19 @@ class CreateCheckoutView(APIView):
             return Response(
                 {'detail': 'This order has already been paid.'},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if order.status != Order.Status.PENDING:
+            return Response(
+                {'detail': 'This order can no longer be paid.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        unavailable = order_unavailable_items(order)
+        if unavailable:
+            return Response(
+                {'detail': 'Some items are no longer available: ' + ', '.join(unavailable)},
+                status=status.HTTP_409_CONFLICT,
             )
 
         try:
@@ -52,6 +64,9 @@ class CreateCheckoutView(APIView):
 
 class VivaWebhookView(APIView):
     permission_classes = (permissions.AllowAny,)
+    # Every delivery comes from Viva's handful of IPs; the anon rate limit
+    # would start rejecting real payment notifications on a busy day.
+    throttle_classes = ()
 
     def get(self, request):
         # One-time URL ownership check Viva's merchant portal performs
@@ -67,7 +82,7 @@ class VivaWebhookView(APIView):
             return Response(status=status.HTTP_200_OK)
 
         payment = Payment.objects.filter(viva_order_code=order_code).first()
-        if payment is None or payment.status == Payment.Status.PAID:
+        if payment is None or payment.status != Payment.Status.PENDING:
             return Response(status=status.HTTP_200_OK)
 
         # Never trust the webhook body for the actual payment facts — Viva
@@ -83,29 +98,40 @@ class VivaWebhookView(APIView):
         verified = (
             txn.get('statusId') == 'F'
             and str(txn.get('orderCode') or '') == payment.viva_order_code
-            and txn.get('amount') == viva_client.to_cents(payment.amount)
+            and txn.get('amount') is not None
+            and viva_client.to_cents(txn['amount']) == viva_client.to_cents(payment.amount)
         )
         if not verified:
             return Response(status=status.HTTP_200_OK)
 
         with db_transaction.atomic():
             locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
-            if locked_payment.status == Payment.Status.PAID:
+            if locked_payment.status != Payment.Status.PENDING:
+                return Response(status=status.HTTP_200_OK)
+            # Lock the order too, so two payments for the same order (customer
+            # paid in two tabs) are processed one at a time.
+            order = Order.objects.select_for_update().get(pk=locked_payment.order_id)
+            locked_payment.viva_transaction_id = str(transaction_id)
+
+            other_paid = order.payments.filter(status=Payment.Status.PAID).exclude(pk=locked_payment.pk).exists()
+            if other_paid or order.status != Order.Status.PENDING:
+                # The money was taken, but this order is already paid or was
+                # cancelled — flag it for a manual refund rather than
+                # confirming twice or decrementing stock again.
+                locked_payment.status = Payment.Status.REFUND_NEEDED
+                locked_payment.save(update_fields=['status', 'viva_transaction_id', 'updated_at'])
+                logger.error(
+                    'Payment #%s for Order #%s (status %s) needs a refund: order already paid or not pending',
+                    locked_payment.pk, order.pk, order.status,
+                )
                 return Response(status=status.HTTP_200_OK)
 
             locked_payment.status = Payment.Status.PAID
-            locked_payment.viva_transaction_id = str(transaction_id)
             locked_payment.save(update_fields=['status', 'viva_transaction_id', 'updated_at'])
 
-            order = locked_payment.order
-            if order.status == Order.Status.PENDING:
-                order.status = Order.Status.CONFIRMED
-                order.save(update_fields=['status', 'updated_at'])
+            order.status = Order.Status.CONFIRMED
+            order.save(update_fields=['status', 'updated_at'])
 
-            for item in order.items.all():
-                if item.variant_id:
-                    ProductVariant.objects.filter(pk=item.variant_id).update(stock=F('stock') - item.qty)
-                elif item.product_id:
-                    Product.objects.filter(pk=item.product_id).update(stock=F('stock') - item.qty)
+            decrement_order_stock(order, logger)
 
         return Response(status=status.HTTP_200_OK)
