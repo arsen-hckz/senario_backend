@@ -20,6 +20,9 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            # Abort on the first failure — otherwise a failed git pull still
+            # rebuilds the old code and the run shows green.
+            set -e
             cd /var/www/senario_backend
             git pull origin main
             docker-compose build web
