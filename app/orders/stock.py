@@ -1,3 +1,6 @@
+from django.core.cache import cache
+from django.db import transaction
+
 from products.models import Product, ProductVariant
 
 
@@ -55,3 +58,6 @@ def decrement_order_stock(order, logger):
             )
         row.stock = max(row.stock - item.qty, 0)
         row.save(update_fields=['stock'])
+
+    # The public product list is cached for 5 minutes and shows stock.
+    transaction.on_commit(lambda: cache.delete_pattern('products:*'))

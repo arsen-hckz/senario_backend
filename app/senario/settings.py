@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from decouple import config
 
@@ -73,10 +74,18 @@ DATABASES = {
     }
 }
 
+# `manage.py test` clears the cache between tests; point it at its own Redis
+# database so a test run on the server can never wipe production's sessions,
+# rate-limit counters or the cached Viva token.
+TESTING = len(sys.argv) > 1 and sys.argv[1] == 'test'
+REDIS_URL = config('REDIS_URL', default='redis://redis:6379/0')
+if TESTING:
+    REDIS_URL = REDIS_URL.rsplit('/', 1)[0] + '/15'
+
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://redis:6379/0'),
+        'LOCATION': REDIS_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
         }
@@ -106,8 +115,10 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon':     '200/day',
-        'user':     '2000/day',
+        # Per minute, not per day: shoppers behind one mobile-carrier or
+        # office IP share these counters, and every page makes several calls.
+        'anon':     '120/min',
+        'user':     '240/min',
         'login':    '5/min',
         'register': '10/hour',
         'resend-verification': '5/hour',
@@ -194,3 +205,30 @@ VIVA_CLIENT_ID = config('VIVA_CLIENT_ID', default='')
 VIVA_CLIENT_SECRET = config('VIVA_CLIENT_SECRET', default='')
 VIVA_SOURCE_CODE = config('VIVA_SOURCE_CODE', default='')
 VIVA_WEBHOOK_VERIFICATION_KEY = config('VIVA_WEBHOOK_VERIFICATION_KEY', default='')
+
+# Staff alerts: unhandled 500s, plus payment problems that need a human
+# (a charged payment needing a refund, an oversold item, Viva unreachable).
+# Without this they only ever reached the container's stdout.
+ADMINS = [('Senario', a.strip()) for a in config('ADMINS', default=SUPPORT_EMAIL).split(',') if a.strip()]
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'require_debug_false': {'()': 'django.utils.log.RequireDebugFalse'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler'},
+        'mail_admins': {
+            'level': 'ERROR',
+            'filters': ['require_debug_false'],
+            'class': 'django.utils.log.AdminEmailHandler',
+        },
+    },
+    'loggers': {
+        'django': {'handlers': ['console'], 'level': 'INFO'},
+        'django.request': {'handlers': ['console', 'mail_admins'], 'level': 'ERROR', 'propagate': False},
+        'payments': {'handlers': ['console', 'mail_admins'], 'level': 'INFO', 'propagate': False},
+        'orders': {'handlers': ['console', 'mail_admins'], 'level': 'INFO', 'propagate': False},
+    },
+}

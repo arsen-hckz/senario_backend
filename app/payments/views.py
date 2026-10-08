@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from django.conf import settings
 from django.db import transaction as db_transaction
@@ -15,6 +16,17 @@ from .models import Payment
 from .viva_client import VivaError
 
 logger = logging.getLogger(__name__)
+
+# Viva webhook EventTypeId for "Transaction Payment Created".
+TRANSACTION_PAYMENT_CREATED = 1796
+
+
+def _is_guid(value):
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 class CreateCheckoutView(APIView):
@@ -74,10 +86,14 @@ class VivaWebhookView(APIView):
         return Response({'Key': settings.VIVA_WEBHOOK_VERIFICATION_KEY})
 
     def post(self, request):
+        if not isinstance(request.data, dict) or request.data.get('EventTypeId') != TRANSACTION_PAYMENT_CREATED:
+            # Only successful-payment events confirm orders. A reversal (refund)
+            # event carries the same OrderCode, and must never count as payment.
+            return Response(status=status.HTTP_200_OK)
         event_data = request.data.get('EventData') or {}
         order_code = str(event_data.get('OrderCode') or '')
-        transaction_id = event_data.get('TransactionId')
-        if not order_code or not transaction_id:
+        transaction_id = str(event_data.get('TransactionId') or '')
+        if not order_code or not _is_guid(transaction_id):
             # Not an event shape we care about — ack so Viva doesn't retry it forever.
             return Response(status=status.HTTP_200_OK)
 
