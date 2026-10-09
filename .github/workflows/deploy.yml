@@ -25,12 +25,9 @@ jobs:
             set -e
             cd /var/www/senario_backend
             git pull origin main
-            docker-compose build web
-            docker-compose stop web
-            docker-compose rm -f web
-            # --no-deps: without it, docker-compose (v1.29) re-evaluates db/redis for
-            # recreation too and can hit a KeyError('ContainerConfig') bug against newer
-            # Docker Engine image metadata, taking db down along with a failed deploy.
-            docker-compose up -d --no-deps web
-            docker-compose exec -T -u app web python manage.py migrate
-            docker-compose exec -T -u app web python manage.py collectstatic --noinput
+            docker compose build web
+            # --no-deps: a code deploy replaces only the web container and never
+            # touches db/redis/nginx.
+            docker compose up -d --no-deps web
+            docker compose exec -T -u app web python manage.py migrate
+            docker compose exec -T -u app web python manage.py collectstatic --noinput
