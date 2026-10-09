@@ -49,6 +49,7 @@ services:
       - static_files:/static
       - media_files:/media
       - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - web
 
