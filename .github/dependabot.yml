@@ -1,0 +1,23 @@
+# Weekly PRs for outdated or vulnerable dependencies. Security fixes are
+# raised as soon as an advisory is published, regardless of this schedule.
+# Dependabot PRs never deploy on their own: only a merge to main does.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # One PR for routine patch bumps instead of one per package.
+      patch-updates:
+        update-types: [patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
