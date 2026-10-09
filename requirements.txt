@@ -8,5 +8,5 @@ django-redis==5.4.0
 gunicorn==22.0.0
 python-decouple==3.8
 Pillow==12.3.0
-django-anymail==15.1
+django-anymail==15.2
 requests==2.34.2
