@@ -15,7 +15,7 @@ class ProductListView(generics.ListAPIView):
     serializer_class = ProductSerializer
 
     def get_queryset(self):
-        qs = Product.objects.filter(is_active=True).select_related('category').prefetch_related('variants')
+        qs = Product.objects.filter(is_active=True).select_related('category').prefetch_related('variants', 'images')
         category = self.request.query_params.get('category')
         search   = self.request.query_params.get('search')
         if category:
@@ -47,7 +47,7 @@ class ProductDetailView(generics.RetrieveAPIView):
     permission_classes = (permissions.AllowAny,)
     serializer_class = ProductSerializer
     lookup_field = 'slug'
-    queryset = Product.objects.filter(is_active=True).select_related('category').prefetch_related('variants')
+    queryset = Product.objects.filter(is_active=True).select_related('category').prefetch_related('variants', 'images')
 
 
 class CategoryListView(generics.ListAPIView):
@@ -59,7 +59,7 @@ class CategoryListView(generics.ListAPIView):
 class ProductAdminViewSet(viewsets.ModelViewSet):
     permission_classes = (permissions.IsAdminUser,)
     serializer_class = ProductSerializer
-    queryset = Product.objects.all().select_related('category').prefetch_related('variants')
+    queryset = Product.objects.all().select_related('category').prefetch_related('variants', 'images')
     lookup_field = 'pk'
     pagination_class = None
 
