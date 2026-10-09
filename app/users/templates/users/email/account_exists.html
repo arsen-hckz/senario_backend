@@ -1,0 +1,8 @@
+{% extends "users/email/base.html" %}
+{% block title %}You already have an account{% endblock %}
+{% block intro %}<p style="margin:0 0 16px 0;">
+                Someone just tried to create a {{ brand_name }} account with this email address,
+                but you already have one. If that was you, just sign in &mdash; or reset your password if you've forgotten it.
+              </p>{% endblock %}
+{% block action_label %}Sign In{% endblock %}
+{% block note %}Forgot your password? Reset it here: <a href="{{ reset_url }}" style="color:#3f3f46;">{{ reset_url }}</a><br><br>If this wasn't you, you can safely ignore this email &mdash; nothing has changed on your account.{% endblock %}

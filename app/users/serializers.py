@@ -3,10 +3,13 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -23,10 +26,10 @@ class RegisterSerializer(serializers.Serializer):
     last_name  = serializers.CharField(max_length=60, required=False, allow_blank=True)
 
     def validate_email(self, value):
-        email = User.objects.normalize_email(value)
-        if User.objects.filter(email__iexact=email).exists():
-            raise serializers.ValidationError('An account with this email already exists.')
-        return email
+        # An address that already has an account is not an error here: the
+        # view answers exactly as for a new signup, so the endpoint can't be
+        # used to find out who is a customer.
+        return User.objects.normalize_email(value)
 
     def validate(self, attrs):
         # Same strength rules the admin uses (common passwords, all-numeric,
@@ -82,7 +85,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             data = super().validate(attrs)
         except AuthenticationFailed:
             email = attrs.get(self.username_field, '')
-            if PendingRegistration.objects.filter(email__iexact=email).exists():
+            pending = PendingRegistration.objects.filter(email__iexact=email).first()
+            # Only with the right password: otherwise this message would tell
+            # anyone which addresses have an unfinished signup.
+            if pending and check_password(attrs.get('password', ''), pending.password_hash):
                 raise AuthenticationFailed(
                     'Please verify your email address before logging in.', code='email_not_verified',
                 )
@@ -93,3 +99,33 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class ResendVerificationEmailSerializer(serializers.Serializer):
     email = serializers.EmailField()
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    uid      = serializers.CharField()
+    token    = serializers.CharField()
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    default_error_messages = {
+        'invalid_link': 'This reset link is invalid or has expired. Please request a new one.',
+    }
+
+    def validate(self, attrs):
+        try:
+            pk = force_str(urlsafe_base64_decode(attrs['uid']))
+            user = User.objects.get(pk=pk, is_active=True)
+        except (ValueError, TypeError, OverflowError, User.DoesNotExist):
+            self.fail('invalid_link')
+        if not default_token_generator.check_token(user, attrs['token']):
+            self.fail('invalid_link')
+
+        try:
+            validate_password(attrs['password'], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'password': list(exc.messages)})
+        attrs['user'] = user
+        return attrs

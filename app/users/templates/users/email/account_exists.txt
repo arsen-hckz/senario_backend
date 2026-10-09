@@ -1,0 +1,12 @@
+{% autoescape off %}Hey{% if first_name %} {{ first_name }}{% endif %},
+
+Someone just tried to create a {{ brand_name }} account with this email address, but you already have one. If that was you, just sign in:
+{{ action_url }}
+
+Forgot your password? Reset it here:
+{{ reset_url }}
+
+If this wasn't you, you can safely ignore this email - nothing has changed on your account.
+
+(c) {{ current_year }} {{ brand_name }}. All rights reserved.
+{% endautoescape %}

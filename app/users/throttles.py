@@ -23,3 +23,11 @@ class RegisterRateThrottle(_PerIPRateThrottle):
 
 class ResendVerificationRateThrottle(_PerIPRateThrottle):
     scope = 'resend-verification'
+
+
+class PasswordResetRateThrottle(_PerIPRateThrottle):
+    scope = 'password-reset'
+
+
+class PasswordResetConfirmRateThrottle(_PerIPRateThrottle):
+    scope = 'password-reset-confirm'

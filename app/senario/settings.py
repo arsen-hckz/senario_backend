@@ -122,6 +122,8 @@ REST_FRAMEWORK = {
         'login':    '5/min',
         'register': '10/hour',
         'resend-verification': '5/hour',
+        'password-reset': '5/hour',
+        'password-reset-confirm': '20/hour',
     },
 }
 
@@ -184,7 +186,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 BRAND_NAME = config('BRAND_NAME', default='Senario')
 FRONTEND_URL = config('FRONTEND_URL', default='')  # e.g. https://senario.app — if unset, verification links hit the API directly
 EMAIL_VERIFICATION_TIMEOUT_DAYS = config('EMAIL_VERIFICATION_TIMEOUT_DAYS', default=3, cast=int)
-PASSWORD_RESET_TIMEOUT = EMAIL_VERIFICATION_TIMEOUT_DAYS * 24 * 60 * 60
+# Password-reset links (Django's default_token_generator): short-lived, since
+# anyone who reads the email can take over the account with one.
+PASSWORD_RESET_TIMEOUT = 60 * 60
 
 EMAIL_BACKEND = config(
     'EMAIL_BACKEND',

@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -97,13 +98,23 @@ class EmailVerificationTests(APITestCase):
         self.assertEqual(User.objects.filter(email__iexact='new@example.com').count(), 1)
         self.assertFalse(PendingRegistration.objects.exists())
 
-    def test_register_rejects_email_of_already_verified_user(self):
-        self.register()
-        pending = PendingRegistration.objects.get(email='new@example.com')
-        self.client.get(f'/api/auth/verify-email/{pending.token}/')
+    def test_register_existing_account_looks_like_new_signup(self):
+        """Register must not reveal which emails already have an account:
+        same status and body as a fresh signup, and the owner gets a heads-up
+        email instead of a verification link."""
+        User.objects.create_user(email='taken@example.com', password='ownerpass123')
+        fresh = self.register(email='fresh@example.com')
+        mail.outbox.clear()
 
-        res = self.register()
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        res = self.register(email='Taken@example.com', password='attackerpass123')
+
+        self.assertEqual(res.status_code, fresh.status_code)
+        self.assertEqual(res.data['detail'], fresh.data['detail'])
+        self.assertFalse(PendingRegistration.objects.filter(email__iexact='taken@example.com').exists())
+        self.assertTrue(User.objects.get(email='taken@example.com').check_password('ownerpass123'))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['taken@example.com'])
+        self.assertIn('already have', mail.outbox[0].subject)
 
     def test_login_before_verification_gives_helpful_message(self):
         self.register()
@@ -113,6 +124,16 @@ class EmailVerificationTests(APITestCase):
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertIn('verify', res.data['detail'].lower())
+
+    def test_login_wrong_password_for_pending_signup_gives_generic_message(self):
+        """The 'verify your email' hint must not leak that a signup exists."""
+        self.register()
+        res = self.client.post('/api/auth/login/', {
+            'email': 'new@example.com',
+            'password': 'notthepassword1',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertNotIn('verify', res.data['detail'].lower())
 
     def test_login_with_unregistered_email_gives_generic_message(self):
         res = self.client.post('/api/auth/login/', {
@@ -201,6 +222,93 @@ class EmailVerificationTests(APITestCase):
         }, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(mail.outbox), 0)
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', FRONTEND_URL='https://shop.example')
+class PasswordResetTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(email='user@example.com', password='oldpass12345', first_name='Ann')
+
+    def request_reset(self, email='user@example.com'):
+        return self.client.post('/api/auth/password-reset/', {'email': email}, format='json')
+
+    def link_params(self):
+        match = re.search(r'reset-password\.html\?uid=([^&\s]+)&token=([^\s"<]+)', mail.outbox[-1].body)
+        self.assertIsNotNone(match)
+        return match.group(1), match.group(2)
+
+    def confirm(self, uid, token, password='Brand-new-pass-9'):
+        return self.client.post('/api/auth/password-reset/confirm/', {
+            'uid': uid, 'token': token, 'password': password,
+        }, format='json')
+
+    def test_request_sends_link_to_frontend(self):
+        res = self.request_reset('USER@example.com')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['user@example.com'])
+        self.assertIn('https://shop.example/reset-password.html?uid=', mail.outbox[0].body)
+
+    def test_request_for_unknown_email_is_indistinguishable(self):
+        known = self.request_reset()
+        unknown = self.request_reset('nobody@example.com')
+        self.assertEqual(unknown.status_code, known.status_code)
+        self.assertEqual(unknown.data, known.data)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_request_ignores_inactive_user(self):
+        self.user.is_active = False
+        self.user.save()
+        self.request_reset()
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_confirm_sets_password_and_link_is_single_use(self):
+        self.request_reset()
+        uid, token = self.link_params()
+
+        res = self.confirm(uid, token)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Brand-new-pass-9'))
+
+        again = self.confirm(uid, token, password='Another-pass-77')
+        self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Brand-new-pass-9'))
+
+    def test_confirm_rejects_bad_token_and_bad_uid(self):
+        self.request_reset()
+        uid, token = self.link_params()
+        self.assertEqual(self.confirm(uid, token[:-2] + 'xx').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.confirm('!!notbase64', token).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.confirm('OTk5OTk', token).status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('oldpass12345'))
+
+    def test_confirm_rejects_weak_password(self):
+        self.request_reset()
+        uid, token = self.link_params()
+        res = self.confirm(uid, token, password='12345678')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('password', res.data)
+
+    def test_confirm_signs_out_existing_sessions(self):
+        login = self.client.post('/api/auth/login/', {
+            'email': 'user@example.com', 'password': 'oldpass12345',
+        }, format='json')
+        refresh = login.data['refresh']
+
+        self.request_reset()
+        uid, token = self.link_params()
+        self.confirm(uid, token)
+
+        res = self.client.post('/api/auth/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_request_is_rate_limited(self):
+        codes = [self.request_reset().status_code for _ in range(6)]
+        self.assertEqual(codes[-1], status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 class LoginThrottleTests(APITestCase):
