@@ -25,12 +25,21 @@ class ProductListView(generics.ListAPIView):
         return qs
 
     def list(self, request, *args, **kwargs):
-        cache_key = 'products:' + hashlib.md5(request.get_full_path().encode()).hexdigest()
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return Response(cached)
+        # Keyed on the category only, never the raw URL or the search text:
+        # those are unbounded, so `?x=1`, `?x=2`, ... would each add a Redis
+        # entry and anyone could fill the cache. Searches skip the cache, and
+        # an empty result (e.g. a made-up category) is never stored.
+        search = request.query_params.get('search')
+        category = request.query_params.get('category') or ''
+        cache_key = None if search else 'products:category:' + hashlib.md5(category.encode()).hexdigest()
+
+        if cache_key:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
         data = ProductSerializer(self.get_queryset(), many=True, context={'request': request}).data
-        cache.set(cache_key, data, CACHE_TTL)
+        if cache_key and data:
+            cache.set(cache_key, data, CACHE_TTL)
         return Response(data)
 
 
