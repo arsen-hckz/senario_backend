@@ -1,7 +1,10 @@
 services:
+  # Every service has restart: unless-stopped, so a crash or a droplet reboot
+  # brings the site back up on its own instead of leaving it down.
 
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     volumes:
       - postgres_data:/var/lib/postgresql/data
     env_file: .env
@@ -17,12 +20,12 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     volumes:
       - redis_data:/data
 
   web:
     build: .
-    # Come back up after a crash or a droplet reboot instead of leaving the API down.
     restart: unless-stopped
     command: >
       sh -c "python manage.py migrate &&
@@ -41,6 +44,7 @@ services:
 
   nginx:
     image: nginx:alpine
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
