@@ -81,6 +81,12 @@ class UserSerializer(serializers.ModelSerializer):
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
+        # Emails are unique regardless of case (register checks iexact), so
+        # let "Ann@x.com" sign in an account stored as "ann@x.com" and vice versa.
+        email = attrs.get(self.username_field, '')
+        stored = User.objects.filter(email__iexact=email).values_list('email', flat=True).first()
+        if stored:
+            attrs[self.username_field] = stored
         try:
             data = super().validate(attrs)
         except AuthenticationFailed:
@@ -128,4 +134,21 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError({'password': list(exc.messages)})
         attrs['user'] = user
+        return attrs
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password     = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_current_password(self, value):
+        if not self.context['request'].user.check_password(value):
+            raise serializers.ValidationError('Current password is incorrect.')
+        return value
+
+    def validate(self, attrs):
+        try:
+            validate_password(attrs['new_password'], user=self.context['request'].user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'new_password': list(exc.messages)})
         return attrs

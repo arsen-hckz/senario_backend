@@ -13,7 +13,7 @@ from orders.stock import decrement_order_stock, order_unavailable_items
 
 from . import viva_client
 from .models import Payment
-from .viva_client import VivaError
+from .viva_client import VivaError, VivaTransactionNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,13 @@ class VivaWebhookView(APIView):
         # with our own OAuth credentials before believing anything.
         try:
             txn = viva_client.get_transaction(transaction_id)
+        except VivaTransactionNotFound:
+            # This endpoint is public and unthrottled, so anyone can post made-up
+            # ids. Warning + 4xx only: an error log or a 5xx response would email
+            # staff on every one. Still non-2xx, so Viva retries a real payment
+            # it hadn't finished recording yet.
+            logger.warning('Webhook for unknown Viva transaction %s', transaction_id)
+            return Response(status=status.HTTP_404_NOT_FOUND)
         except VivaError:
             logger.exception('Failed to verify Viva transaction %s', transaction_id)
             # Non-2xx so Viva retries delivery later and we get another chance to verify.

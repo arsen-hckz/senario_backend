@@ -1,4 +1,11 @@
+import io
+import os
+import tempfile
+
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -7,6 +14,13 @@ from .models import MoodboardPhoto
 User = get_user_model()
 
 
+def make_png(name):
+    buf = io.BytesIO()
+    Image.new('RGB', (10, 10)).save(buf, format='PNG')
+    return SimpleUploadedFile(name, buf.getvalue(), content_type='image/png')
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class MoodboardTests(APITestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
@@ -66,6 +80,23 @@ class MoodboardTests(APITestCase):
         res = self.client.delete(f'/api/moodboard/admin/{photo.id}/')
         self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
         self.assertFalse(MoodboardPhoto.objects.filter(id=photo.id).exists())
+
+    def test_replacing_or_deleting_an_upload_deletes_the_old_file(self):
+        self.auth(self.staff)
+        res = self.client.post('/api/moodboard/admin/', {'title': 'T', 'image': make_png('one.png')}, format='multipart')
+        photo = MoodboardPhoto.objects.get(pk=res.data['id'])
+        first_path = photo.image.path
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.patch(f'/api/moodboard/admin/{photo.id}/', {'image': make_png('two.png')}, format='multipart')
+        photo.refresh_from_db()
+        self.assertFalse(os.path.exists(first_path))
+        second_path = photo.image.path
+        self.assertTrue(os.path.exists(second_path))
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.delete(f'/api/moodboard/admin/{photo.id}/')
+        self.assertFalse(os.path.exists(second_path))
 
     def test_reorder_updates_order_to_match_index(self):
         p1 = MoodboardPhoto.objects.create(title='A', external_src='a.jpg', order=0)

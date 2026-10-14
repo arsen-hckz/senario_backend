@@ -22,6 +22,22 @@ def _parse_qty(raw, minimum):
     return qty
 
 
+def _parse_id(raw):
+    """Positive integer id from request data, or None. A junk id must be a
+    400, not a ValueError deep in the ORM (a 500 that also emails staff)."""
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _bad_request(detail):
+    return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
+
+
 def _bad_qty():
     return Response(
         {'detail': f'qty must be a whole number up to {MAX_QTY_PER_ITEM}.'},
@@ -49,14 +65,26 @@ class CartView(APIView):
 
     def post(self, request):
         cart = self._get_cart(request.user)
-        product_id = request.data.get('product_id')
-        variant_id = request.data.get('variant_id')
+        product_id = _parse_id(request.data.get('product_id'))
+        if product_id is None:
+            return _bad_request('product_id must be a product id.')
+        raw_variant = request.data.get('variant_id')
+        variant_id = _parse_id(raw_variant) if raw_variant not in (None, '') else None
+        if raw_variant not in (None, '') and variant_id is None:
+            return _bad_request('variant_id must be a size id.')
         qty = _parse_qty(request.data.get('qty', 1), minimum=1)
         if qty is None:
             return _bad_qty()
 
         product = get_object_or_404(Product, pk=product_id, is_active=True)
-        variant = get_object_or_404(ProductVariant, pk=variant_id, product=product) if variant_id else None
+        if variant_id:
+            variant = get_object_or_404(ProductVariant, pk=variant_id, product=product)
+        elif product.variants.exists():
+            # Without a size the order can't be packed, and stock would come
+            # off the product's own counter instead of the size's.
+            return _bad_request('Please choose a size.')
+        else:
+            variant = None
 
         item = CartItem.objects.filter(cart=cart, product=product, variant=variant).first()
         new_qty = qty + (item.qty if item else 0)
@@ -76,7 +104,9 @@ class CartView(APIView):
 
     def delete(self, request):
         cart = self._get_cart(request.user)
-        item_id = request.data.get('item_id')
+        item_id = _parse_id(request.data.get('item_id'))
+        if item_id is None:
+            return _bad_request('item_id must be a cart item id.')
         get_object_or_404(CartItem, pk=item_id, cart=cart).delete()
         return Response(CartSerializer(cart, context={'request': request}).data)
 

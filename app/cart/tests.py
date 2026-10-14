@@ -18,12 +18,29 @@ class CartQtyTests(APITestCase):
         self.client.force_authenticate(user=self.user)
         self.product = Product.objects.create(name='Tee', slug='tee', price=Decimal('20.00'), stock=5)
         self.variant = ProductVariant.objects.create(product=self.product, size='M', stock=2)
+        self.plain = Product.objects.create(name='Mug', slug='mug', price=Decimal('10.00'), stock=5)
 
     def add(self, qty, variant=None):
-        data = {'product_id': self.product.id, 'qty': qty}
+        # Sized product with a size, or the one-size product without.
+        product = self.product if variant else self.plain
+        data = {'product_id': product.id, 'qty': qty}
         if variant:
             data['variant_id'] = variant.id
         return self.client.post('/api/cart/', data, format='json')
+
+    def test_sized_product_needs_a_size(self):
+        res = self.client.post('/api/cart/', {'product_id': self.product.id, 'qty': 1}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('size', res.data['detail'])
+        self.assertFalse(CartItem.objects.exists())
+
+    def test_junk_ids_are_400_not_500(self):
+        for data in ({'product_id': 'abc'}, {'product_id': None}, {'product_id': True},
+                     {'product_id': self.product.id, 'variant_id': 'x'}):
+            res = self.client.post('/api/cart/', dict(data, qty=1), format='json')
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, data)
+        res = self.client.delete('/api/cart/', {'item_id': 'abc'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_add_valid_qty(self):
         res = self.add(2)

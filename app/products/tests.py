@@ -44,6 +44,15 @@ class ProductListCacheTests(APITestCase):
             self.client.get(f'/api/products/?category=nope{i}')
         self.assertEqual(self.product_cache_keys(), [])
 
+    def test_any_product_save_clears_the_list_cache(self):
+        # e.g. an edit in the Django admin, which bypasses the API views
+        self.client.get('/api/products/')
+        self.assertEqual(len(self.product_cache_keys()), 1)
+        with self.captureOnCommitCallbacks(execute=True):
+            Product.objects.update_or_create(slug='tee', defaults={'price': '25.00'})
+        self.assertEqual(self.product_cache_keys(), [])
+        self.assertEqual(self.client.get('/api/products/').data[0]['price'], '25.00')
+
     def test_category_filter_is_cached_separately(self):
         self.assertEqual(len(self.client.get('/api/products/?category=shirts').data), 1)
         self.assertEqual(len(self.client.get('/api/products/').data), 1)
@@ -90,7 +99,8 @@ class ProductGalleryTests(APITestCase):
         a, b, c = [img['id'] for img in res.data['images']]
         removed_path = ProductImage.objects.get(pk=b).image.path
 
-        res = self.patch(pk, remove_image_ids=[b], image_order=[c, a], uploaded_images=[make_jpeg('d.jpg')])
+        with self.captureOnCommitCallbacks(execute=True):  # files are deleted on commit
+            res = self.patch(pk, remove_image_ids=[b], image_order=[c, a], uploaded_images=[make_jpeg('d.jpg')])
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
         ids = [img['id'] for img in res.data['images']]
         self.assertEqual(ids[:2], [c, a])
@@ -118,6 +128,17 @@ class ProductGalleryTests(APITestCase):
 
         self.patch(mine['id'], remove_image_ids=[other_photo], image_order=[other_photo])
         self.assertTrue(ProductImage.objects.filter(pk=other_photo, product_id=other['id']).exists())
+
+    def test_deleting_product_deletes_its_photo_files(self):
+        res = self.create([make_jpeg('a.jpg'), make_jpeg('b.jpg')])
+        paths = [p.image.path for p in ProductImage.objects.all()]
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.delete(f'/api/products/admin/{res.data["id"]}/')
+        self.assertEqual([os.path.exists(p) for p in paths], [False, False])
+
+    def test_negative_prices_are_rejected(self):
+        self.assertEqual(self.create([], price='-5').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.create([], sale_price='-1').status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_photo_limit(self):
         pk = self.create([make_jpeg(size=(50, 50)) for _ in range(10)]).data['id']

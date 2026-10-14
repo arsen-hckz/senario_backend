@@ -12,7 +12,7 @@ from orders.models import Order, OrderItem
 from products.models import Product, ProductVariant
 from . import viva_client
 from .models import Payment
-from .viva_client import VivaError
+from .viva_client import VivaError, VivaTransactionNotFound
 
 User = get_user_model()
 
@@ -121,6 +121,20 @@ class PaymentsTests(APITestCase):
         self.assertEqual(payment.viva_transaction_id, TXN_1)
         self.assertEqual(self.order.status, Order.Status.CONFIRMED)
         self.assertEqual(self.variant.stock, 1)  # 3 - qty(2)
+
+    @patch('payments.viva_client.get_transaction')
+    def test_webhook_unknown_transaction_is_retried_but_does_not_email_staff(self, mock_get_transaction):
+        from django.core import mail
+        payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        mock_get_transaction.side_effect = VivaTransactionNotFound('nope')
+
+        with self.settings(ADMINS=[('Staff', 'staff@example.com')]):
+            res = self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(mail.outbox, [])
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.PENDING)
 
     @patch('payments.viva_client.get_transaction')
     def test_webhook_ignores_amount_mismatch(self, mock_get_transaction):
@@ -304,6 +318,14 @@ class VivaClientTests(APITestCase):
         mock_post.side_effect = requests.ConnectionError('down')
         with self.assertRaises(VivaError):
             viva_client.get_access_token()
+
+    @patch('payments.viva_client.requests.request')
+    @patch('payments.viva_client.requests.post')
+    def test_404_transaction_raises_not_found(self, mock_post, mock_request):
+        mock_post.return_value = self._response(200, {'access_token': 't', 'expires_in': 3600})
+        mock_request.return_value = self._response(404)
+        with self.assertRaises(VivaTransactionNotFound):
+            viva_client.get_transaction(TXN_1)
 
     def test_token_cache_is_scoped_to_environment_and_client(self):
         with self.settings(VIVA_ENV='demo', VIVA_CLIENT_ID='a'):

@@ -1,5 +1,6 @@
 import os
 
+from django.core.validators import MinValueValidator
 from django.db import models
 
 from moodboard.image_utils import optimize_image_file
@@ -21,8 +22,8 @@ class Product(models.Model):
     name       = models.CharField(max_length=200)
     slug       = models.SlugField(unique=True)
     description = models.TextField(blank=True)
-    price      = models.DecimalField(max_digits=8, decimal_places=2)
-    sale_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    price      = models.DecimalField(max_digits=8, decimal_places=2, validators=[MinValueValidator(0)])
+    sale_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
     stock      = models.PositiveIntegerField(default=0)
     is_active  = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

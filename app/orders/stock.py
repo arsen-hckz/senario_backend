@@ -1,6 +1,3 @@
-from django.core.cache import cache
-from django.db import transaction
-
 from products.models import Product, ProductVariant
 
 
@@ -13,12 +10,16 @@ def unavailable_items(lines):
     """Names of lines that can't currently be fulfilled.
 
     `lines` is an iterable of (name, product, variant, qty). A line is
-    unavailable if its product was deleted or deactivated, or there isn't
-    enough stock for the requested quantity.
+    unavailable if its product was deleted or deactivated, it has no size
+    but the product is sold in sizes, or there isn't enough stock for the
+    requested quantity.
     """
     problems = []
     for name, product, variant, qty in lines:
         if product is None or not product.is_active:
+            problems.append(name)
+            continue
+        if variant is None and product.variants.exists():
             problems.append(name)
             continue
         if stock_row(product, variant).stock < qty:
@@ -57,7 +58,5 @@ def decrement_order_stock(order, logger):
                 order.id, item.qty, item.product_name, row.stock,
             )
         row.stock = max(row.stock - item.qty, 0)
+        # Saving clears the cached public product list (products.signals).
         row.save(update_fields=['stock'])
-
-    # The public product list is cached for 5 minutes and shows stock.
-    transaction.on_commit(lambda: cache.delete_pattern('products:*'))

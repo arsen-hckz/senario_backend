@@ -62,15 +62,4 @@ class ProductAdminViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all().select_related('category').prefetch_related('variants', 'images')
     lookup_field = 'pk'
     pagination_class = None
-
-    def perform_create(self, serializer):
-        serializer.save()
-        cache.delete_pattern('products:*')
-
-    def perform_update(self, serializer):
-        serializer.save()
-        cache.delete_pattern('products:*')
-
-    def perform_destroy(self, instance):
-        instance.delete()
-        cache.delete_pattern('products:*')
+    # The public list cache is cleared by products.signals on every save/delete.

@@ -20,7 +20,7 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = (
             'id', 'status', 'total',
-            'full_name', 'address', 'city', 'country', 'postal_code',
+            'full_name', 'email', 'phone', 'address', 'city', 'country', 'postal_code',
             'items', 'created_at',
         )
         read_only_fields = ('id', 'status', 'total', 'items', 'created_at')
@@ -28,6 +28,11 @@ class OrderSerializer(serializers.ModelSerializer):
 
 class CreateOrderSerializer(serializers.Serializer):
     full_name   = serializers.CharField(max_length=120)
+    # Defaults to the account's email; the courier needs the phone.
+    email       = serializers.EmailField(required=False, allow_blank=True)
+    phone       = serializers.RegexField(r'^\+?[0-9 ()\-]{6,30}$', max_length=30, error_messages={
+        'invalid': 'Enter a valid phone number.',
+    })
     address     = serializers.CharField(max_length=255)
     city        = serializers.CharField(max_length=100)
     country     = serializers.CharField(max_length=100)
@@ -51,6 +56,8 @@ class CreateOrderSerializer(serializers.Serializer):
             )
         self._cart = cart
         self._items = items
+        attrs['email'] = attrs.get('email') or user.email
+        attrs['phone'] = attrs['phone'].strip()
         return attrs
 
     def create(self, validated_data):

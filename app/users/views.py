@@ -17,6 +17,7 @@ from .emails import send_account_exists_email, send_password_reset_email, send_v
 from .models import PendingRegistration
 from .serializers import (
     CustomTokenObtainPairSerializer,
+    PasswordChangeSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     RegisterSerializer,
@@ -25,6 +26,7 @@ from .serializers import (
 )
 from .throttles import (
     LoginRateThrottle,
+    PasswordChangeRateThrottle,
     PasswordResetConfirmRateThrottle,
     PasswordResetRateThrottle,
     RegisterRateThrottle,
@@ -32,6 +34,16 @@ from .throttles import (
 )
 
 User = get_user_model()
+
+
+def _set_password_and_sign_out_everywhere(user, password):
+    """Must run inside a transaction. Blacklists every refresh token the
+    user holds: whoever knew the old password may still have one. Access
+    tokens expire within the hour."""
+    user.set_password(password)
+    user.save(update_fields=['password'])
+    for outstanding in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=outstanding)
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -151,14 +163,32 @@ class PasswordResetConfirmView(generics.GenericAPIView):
         with transaction.atomic():
             # Changing the password also invalidates the reset token (it is
             # derived from the password hash), so the link is single-use.
-            user.set_password(serializer.validated_data['password'])
-            user.save(update_fields=['password'])
-            # Sign out every device: whoever knew the old password may still
-            # hold a refresh token. Access tokens expire within the hour.
-            for outstanding in OutstandingToken.objects.filter(user=user):
-                BlacklistedToken.objects.get_or_create(token=outstanding)
+            _set_password_and_sign_out_everywhere(user, serializer.validated_data['password'])
 
         return Response({'detail': 'Your password has been reset. You can now sign in.'})
+
+
+class PasswordChangeView(generics.GenericAPIView):
+    permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = PasswordChangeSerializer
+    throttle_classes = [PasswordChangeRateThrottle]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+
+        with transaction.atomic():
+            _set_password_and_sign_out_everywhere(user, serializer.validated_data['new_password'])
+
+        # Every other device is signed out; this one gets a fresh pair so the
+        # customer who just changed their password stays logged in here.
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'detail': 'Your password has been changed.',
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        })
 
 
 class ProfileView(generics.RetrieveUpdateAPIView):

@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'cart',
     'moodboard',
     'payments',
+    'posts',
 ]
 
 MIDDLEWARE = [
@@ -124,6 +125,7 @@ REST_FRAMEWORK = {
         'resend-verification': '5/hour',
         'password-reset': '5/hour',
         'password-reset-confirm': '20/hour',
+        'password-change': '5/min',
     },
 }
 

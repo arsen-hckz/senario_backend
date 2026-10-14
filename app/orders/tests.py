@@ -14,7 +14,7 @@ User = get_user_model()
 
 ADDRESS = {
     'full_name': 'Buyer Name', 'address': 'Addr 1', 'city': 'Athens',
-    'country': 'GR', 'postal_code': '11111',
+    'country': 'GR', 'postal_code': '11111', 'phone': '+30 690 000 0000',
 }
 
 
@@ -31,6 +31,28 @@ class CreateOrderTests(APITestCase):
 
     def create(self):
         return self.client.post('/api/orders/create/', ADDRESS, format='json')
+
+    def test_phone_is_required_and_email_defaults_to_account(self):
+        res = self.client.post('/api/orders/create/', dict(ADDRESS, phone=''), format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('phone', res.data)
+        res = self.client.post('/api/orders/create/', dict(ADDRESS, phone='call me'), format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        res = self.create()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual((res.data['email'], res.data['phone']), ('buyer@example.com', '+30 690 000 0000'))
+
+    def test_checkout_email_overrides_account_email(self):
+        res = self.client.post('/api/orders/create/', dict(ADDRESS, email='gift@example.com'), format='json')
+        self.assertEqual(Order.objects.get(pk=res.data['id']).email, 'gift@example.com')
+
+    def test_sized_item_without_size_cannot_be_ordered(self):
+        from products.models import ProductVariant
+        ProductVariant.objects.create(product=self.product, size='M', stock=5)
+        res = self.create()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Order.objects.exists())
 
     def test_creates_order_with_server_side_total_and_empties_cart(self):
         res = self.create()

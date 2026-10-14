@@ -34,6 +34,10 @@ class VivaError(Exception):
     pass
 
 
+class VivaTransactionNotFound(VivaError):
+    """Viva has no such transaction — e.g. a made-up id in a forged webhook."""
+
+
 def _fetch_access_token():
     credentials = base64.b64encode(
         f'{settings.VIVA_CLIENT_ID}:{settings.VIVA_CLIENT_SECRET}'.encode()
@@ -112,6 +116,8 @@ def get_transaction(transaction_id):
         raise VivaError(f'Not a Viva transaction id: {transaction_id!r}') from exc
 
     response = _api_request('GET', f'/checkout/v2/transactions/{transaction_id}')
+    if response.status_code in (400, 404):
+        raise VivaTransactionNotFound(f'Viva has no transaction {transaction_id}: {response.status_code}')
     if not response.ok:
         raise VivaError(f'Failed to retrieve Viva transaction: {response.status_code} {response.text}')
     return response.json()

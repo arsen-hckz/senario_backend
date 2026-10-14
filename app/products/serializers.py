@@ -85,9 +85,8 @@ class ProductSerializer(serializers.ModelSerializer):
         return attrs
 
     def _apply_gallery_changes(self, product, uploaded, remove_ids, order_ids):
-        for photo in product.images.filter(id__in=remove_ids):
-            photo.image.delete(save=False)
-            photo.delete()
+        # products.signals deletes each removed photo's file.
+        product.images.filter(id__in=remove_ids).delete()
 
         # New files go after the existing photos unless image_order says otherwise.
         last = product.images.aggregate(m=Max('order'))['m']

@@ -31,3 +31,7 @@ class PasswordResetRateThrottle(_PerIPRateThrottle):
 
 class PasswordResetConfirmRateThrottle(_PerIPRateThrottle):
     scope = 'password-reset-confirm'
+
+
+class PasswordChangeRateThrottle(_PerIPRateThrottle):
+    scope = 'password-change'

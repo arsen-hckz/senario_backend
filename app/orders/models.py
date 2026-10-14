@@ -14,8 +14,11 @@ class Order(models.Model):
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='orders')
     status     = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     total      = models.DecimalField(max_digits=10, decimal_places=2)
-    # shipping address snapshot
+    # contact + shipping address snapshot (email/phone are blank on orders
+    # placed before checkout started sending them)
     full_name  = models.CharField(max_length=120)
+    email      = models.EmailField(blank=True)
+    phone      = models.CharField(max_length=30, blank=True)
     address    = models.CharField(max_length=255)
     city       = models.CharField(max_length=100)
     country    = models.CharField(max_length=100)

@@ -331,3 +331,47 @@ class LoginThrottleTests(APITestCase):
             codes.append(res.status_code)
         self.assertEqual(codes[:5], [status.HTTP_401_UNAUTHORIZED] * 5)
         self.assertEqual(codes[5:], [status.HTTP_429_TOO_MANY_REQUESTS] * 2)
+
+
+class PasswordChangeTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(email='Ann@example.com', password='oldpass12345')
+
+    def login(self, email='Ann@example.com', password='oldpass12345'):
+        return self.client.post('/api/auth/login/', {'email': email, 'password': password}, format='json')
+
+    def change(self, access, current='oldpass12345', new='Brand-new-pass-9'):
+        return self.client.post(
+            '/api/auth/password-change/', {'current_password': current, 'new_password': new},
+            format='json', HTTP_AUTHORIZATION=f'Bearer {access}',
+        )
+
+    def test_login_ignores_email_case(self):
+        self.assertEqual(self.login('ann@EXAMPLE.com').status_code, status.HTTP_200_OK)
+
+    def test_requires_auth_and_correct_current_password(self):
+        res = self.client.post('/api/auth/password-change/', {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        access = self.login().data['access']
+        res = self.change(access, current='wrong-pass-1')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('current_password', res.data)
+
+    def test_rejects_weak_new_password(self):
+        access = self.login().data['access']
+        res = self.change(access, new='12345678')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('new_password', res.data)
+
+    def test_changes_password_signs_out_other_devices_keeps_this_one(self):
+        other_device = self.login().data
+        this_device = self.login().data
+        res = self.change(this_device['access'])
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.assertEqual(self.login().status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.login(password='Brand-new-pass-9').status_code, status.HTTP_200_OK)
+        refresh = lambda token: self.client.post('/api/auth/refresh/', {'refresh': token}, format='json')
+        self.assertEqual(refresh(other_device['refresh']).status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(refresh(res.data['refresh']).status_code, status.HTTP_200_OK)
