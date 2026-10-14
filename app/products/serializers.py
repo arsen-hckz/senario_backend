@@ -7,6 +7,14 @@ from .models import Category, Product, ProductImage, ProductVariant
 
 MAX_IMAGES_PER_PRODUCT = 12
 
+# Display order for sizes; anything else (e.g. "One Size") goes after these.
+SIZE_ORDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']
+
+
+def _size_rank(size):
+    upper = size.upper()
+    return (SIZE_ORDER.index(upper), '') if upper in SIZE_ORDER else (len(SIZE_ORDER), upper)
+
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -50,12 +58,17 @@ class ProductSerializer(serializers.ModelSerializer):
     remove_image_ids = serializers.ListField(child=serializers.IntegerField(), write_only=True, required=False)
     image_order      = serializers.ListField(child=serializers.CharField(), write_only=True, required=False)
 
+    # The full set of sizes and their stock, as a JSON string (the admin form
+    # is multipart because of the photos): [{"size": "M", "stock": 4}, ...].
+    # Sizes left out are removed; [] makes it a one-size product again.
+    sizes = serializers.JSONField(write_only=True, required=False, binary=True)
+
     class Meta:
         model = Product
         fields = (
             'id', 'name', 'slug', 'description',
             'price', 'sale_price', 'effective_price',
-            'image', 'images', 'uploaded_images', 'remove_image_ids', 'image_order',
+            'image', 'images', 'uploaded_images', 'remove_image_ids', 'image_order', 'sizes',
             'stock', 'is_active',
             'category', 'category_id', 'variants',
             'created_at',
@@ -70,6 +83,46 @@ class ProductSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         url = first.image.url
         return request.build_absolute_uri(url) if request else url
+
+    def validate_sizes(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Expected a list of {"size", "stock"} objects.')
+        cleaned, seen = [], set()
+        for entry in value:
+            if not isinstance(entry, dict):
+                raise serializers.ValidationError('Each size must be an object with "size" and "stock".')
+            size = str(entry.get('size') or '').strip()
+            if not size or len(size) > 10:
+                raise serializers.ValidationError('Each size needs a name of up to 10 characters.')
+            if size.upper() in seen:
+                raise serializers.ValidationError(f'Size {size} is listed twice.')
+            stock = entry.get('stock')
+            if isinstance(stock, bool) or not isinstance(stock, int) or stock < 0:
+                raise serializers.ValidationError(f'Stock for size {size} must be a whole number, 0 or more.')
+            seen.add(size.upper())
+            cleaned.append({'size': size, 'stock': stock})
+        return cleaned
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['variants'] = sorted(data['variants'], key=lambda v: _size_rank(v['size']))
+        return data
+
+    def _apply_sizes(self, product, sizes):
+        if sizes is None:
+            return
+        existing = {v.size.upper(): v for v in product.variants.all()}
+        for entry in sizes:
+            variant = existing.pop(entry['size'].upper(), None)
+            if variant is None:
+                ProductVariant.objects.create(product=product, size=entry['size'], stock=entry['stock'])
+            elif variant.stock != entry['stock'] or variant.size != entry['size']:
+                variant.stock, variant.size = entry['stock'], entry['size']
+                variant.save(update_fields=['stock', 'size'])
+        # Sizes no longer sold. Past orders keep their size text; carts holding
+        # one are flagged as needing a size.
+        for variant in existing.values():
+            variant.delete()
 
     def validate(self, attrs):
         new = len(attrs.get('uploaded_images', []))
@@ -136,18 +189,23 @@ class ProductSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         gallery = self._pop_gallery_fields(validated_data)
+        sizes = validated_data.pop('sizes', None)
         validated_data.setdefault('slug', self._unique_slug(validated_data['name']))
         product = super().create(validated_data)
         self._apply_gallery_changes(product, *gallery)
+        self._apply_sizes(product, sizes)
         return product
 
     @transaction.atomic
     def update(self, instance, validated_data):
         gallery = self._pop_gallery_fields(validated_data)
+        sizes = validated_data.pop('sizes', None)
         if 'name' in validated_data and 'slug' not in validated_data:
             validated_data['slug'] = self._unique_slug(validated_data['name'], pk=instance.pk)
         product = super().update(instance, validated_data)
         self._apply_gallery_changes(product, *gallery)
-        # Drop any prefetched (now stale) gallery so the response shows the change.
+        self._apply_sizes(product, sizes)
+        # Drop any prefetched (now stale) gallery/sizes so the response shows the change.
         getattr(product, '_prefetched_objects_cache', {}).pop('images', None)
+        getattr(product, '_prefetched_objects_cache', {}).pop('variants', None)
         return product

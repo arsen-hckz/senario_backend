@@ -188,3 +188,51 @@ class OptimizeImagesCommandTests(APITestCase):
         self.assertEqual(photo.image.name, 'products/big.jpg')
         with Image.open(photo.image.path) as img:
             self.assertEqual(max(img.size), 2000)
+
+
+class ProductSizesTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        staff = User.objects.create_user(email='staff@example.com', password='x-pass-123', is_staff=True)
+        self.client.force_authenticate(staff)
+
+    def save(self, sizes, pk=None, **extra):
+        import json
+        # is_active: like the admin form; multipart treats a missing boolean as false.
+        data = {'name': 'Hoodie', 'price': '50.00', 'is_active': 'true', 'sizes': json.dumps(sizes), **extra}
+        if pk:
+            return self.client.patch(f'/api/products/admin/{pk}/', data, format='multipart')
+        return self.client.post('/api/products/admin/', data, format='multipart')
+
+    def sizes_of(self, res):
+        return [(v['size'], v['stock']) for v in res.data['variants']]
+
+    def test_create_with_sizes_returns_them_in_size_order(self):
+        res = self.save([{'size': 'XL', 'stock': 1}, {'size': 'S', 'stock': 4}, {'size': 'M', 'stock': 0}])
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(self.sizes_of(res), [('S', 4), ('M', 0), ('XL', 1)])
+        public = self.client.get(f'/api/products/{res.data["slug"]}/')
+        self.assertEqual([v['size'] for v in public.data['variants']], ['S', 'M', 'XL'])
+
+    def test_update_changes_stock_adds_and_removes_sizes(self):
+        pk = self.save([{'size': 'S', 'stock': 4}, {'size': 'M', 'stock': 2}]).data['id']
+        res = self.save([{'size': 'M', 'stock': 7}, {'size': 'XXL', 'stock': 3}], pk=pk)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(self.sizes_of(res), [('M', 7), ('XXL', 3)])
+        res = self.save([], pk=pk)
+        self.assertEqual(self.sizes_of(res), [])
+
+    def test_patch_without_sizes_leaves_them_alone(self):
+        pk = self.save([{'size': 'S', 'stock': 4}]).data['id']
+        res = self.client.patch(f'/api/products/admin/{pk}/', {'price': '45.00'}, format='multipart')
+        self.assertEqual(self.sizes_of(res), [('S', 4)])
+
+    def test_bad_sizes_are_rejected(self):
+        for bad in ([{'size': 'S', 'stock': -1}], [{'size': 'S', 'stock': 1}, {'size': 's', 'stock': 2}],
+                    [{'size': '', 'stock': 1}], [{'size': 'M', 'stock': 'lots'}], {'size': 'M'}):
+            self.assertEqual(self.save(bad).status_code, status.HTTP_400_BAD_REQUEST, bad)
+
+    def test_sized_product_needs_a_size_in_cart(self):
+        pk = self.save([{'size': 'M', 'stock': 2}]).data['id']
+        res = self.client.post('/api/cart/', {'product_id': pk, 'qty': 1}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
