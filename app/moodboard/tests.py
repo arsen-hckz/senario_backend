@@ -81,6 +81,17 @@ class MoodboardTests(APITestCase):
         self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
         self.assertFalse(MoodboardPhoto.objects.filter(id=photo.id).exists())
 
+    def test_uploads_are_downsized(self):
+        buf = io.BytesIO()
+        Image.new('RGB', (4000, 3000), (200, 80, 40)).save(buf, format='JPEG', quality=100)
+        self.auth(self.staff)
+        res = self.client.post('/api/moodboard/admin/', {
+            'title': 'Big', 'image': SimpleUploadedFile('IMG_1.jpeg', buf.getvalue(), content_type='image/jpeg'),
+        }, format='multipart')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        with Image.open(MoodboardPhoto.objects.get(pk=res.data['id']).image.path) as stored:
+            self.assertEqual(max(stored.size), 2000)
+
     def test_replacing_or_deleting_an_upload_deletes_the_old_file(self):
         self.auth(self.staff)
         res = self.client.post('/api/moodboard/admin/', {'title': 'T', 'image': make_png('one.png')}, format='multipart')
