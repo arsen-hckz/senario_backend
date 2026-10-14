@@ -22,6 +22,8 @@ services:
 
   web:
     build: .
+    # Come back up after a crash or a droplet reboot instead of leaving the API down.
+    restart: unless-stopped
     command: >
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
