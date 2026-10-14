@@ -21,10 +21,15 @@ class MoodboardPhotoSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        request = self.context.get('request')
+
+        def absolute(field_file):
+            return request.build_absolute_uri(field_file.url) if request else field_file.url
+
         if instance.image:
-            request = self.context.get('request')
-            url = instance.image.url
-            data['src'] = request.build_absolute_uri(url) if request else url
+            data['src'] = absolute(instance.image)
         else:
             data['src'] = instance.external_src
+        # Small version for grid tiles; `src` stays the full photo for the viewer.
+        data['thumb'] = absolute(instance.thumb) if instance.thumb else data['src']
         return data

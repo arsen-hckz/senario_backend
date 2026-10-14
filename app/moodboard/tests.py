@@ -92,6 +92,63 @@ class MoodboardTests(APITestCase):
         with Image.open(MoodboardPhoto.objects.get(pk=res.data['id']).image.path) as stored:
             self.assertEqual(max(stored.size), 2000)
 
+    def big_jpeg(self, name='IMG_1.jpeg'):
+        buf = io.BytesIO()
+        Image.new('RGB', (4000, 3000), (200, 80, 40)).save(buf, format='JPEG', quality=100)
+        return SimpleUploadedFile(name, buf.getvalue(), content_type='image/jpeg')
+
+    def test_upload_gets_a_grid_thumbnail_and_list_returns_both(self):
+        self.auth(self.staff)
+        res = self.client.post('/api/moodboard/admin/', {'title': 'Big', 'image': self.big_jpeg()}, format='multipart')
+        photo = MoodboardPhoto.objects.get(pk=res.data['id'])
+        with Image.open(photo.thumb.path) as thumb:
+            self.assertEqual(max(thumb.size), 1000)
+
+        item = self.client.get('/api/moodboard/').data[0]
+        self.assertTrue(item['src'].endswith(photo.image.name))
+        self.assertTrue(item['thumb'].endswith(photo.thumb.name))
+        self.assertNotEqual(item['src'], item['thumb'])
+
+    def test_external_src_photo_uses_src_as_thumb(self):
+        MoodboardPhoto.objects.create(title='Ext', external_src='a.jpg')
+        item = self.client.get('/api/moodboard/').data[0]
+        self.assertEqual(item['thumb'], 'a.jpg')
+
+    def test_replacing_image_replaces_thumbnail_and_delete_removes_it(self):
+        self.auth(self.staff)
+        res = self.client.post('/api/moodboard/admin/', {'title': 'T', 'image': make_png('one.png')}, format='multipart')
+        photo = MoodboardPhoto.objects.get(pk=res.data['id'])
+        old_thumb = photo.thumb.path
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.patch(f'/api/moodboard/admin/{photo.id}/', {'image': make_png('two.png')}, format='multipart')
+        photo.refresh_from_db()
+        self.assertFalse(os.path.exists(old_thumb))
+        self.assertTrue(os.path.exists(photo.thumb.path))
+        self.assertIn('two', photo.thumb.name)
+
+        new_thumb = photo.thumb.path
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.delete(f'/api/moodboard/admin/{photo.id}/')
+        self.assertFalse(os.path.exists(new_thumb))
+
+    def test_backfill_migration_creates_missing_thumbnails(self):
+        import importlib
+        from django.apps import apps
+        self.auth(self.staff)
+        res = self.client.post('/api/moodboard/admin/', {'title': 'Old', 'image': self.big_jpeg()}, format='multipart')
+        MoodboardPhoto.objects.filter(pk=res.data['id']).update(thumb='')  # as before thumbnails existed
+        MoodboardPhoto.objects.create(title='Missing file', image='moodboard/gone.jpg')
+        MoodboardPhoto.objects.filter(title='Missing file').update(thumb='')
+
+        migration = importlib.import_module('moodboard.migrations.0003_backfill_thumbnails')
+        migration.backfill_thumbnails(apps, None)
+
+        photo = MoodboardPhoto.objects.get(pk=res.data['id'])
+        with Image.open(photo.thumb.path) as thumb:
+            self.assertEqual(max(thumb.size), 1000)
+        self.assertEqual(MoodboardPhoto.objects.get(title='Missing file').thumb.name, '')
+
     def test_replacing_or_deleting_an_upload_deletes_the_old_file(self):
         self.auth(self.staff)
         res = self.client.post('/api/moodboard/admin/', {'title': 'T', 'image': make_png('one.png')}, format='multipart')

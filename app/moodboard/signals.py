@@ -11,16 +11,19 @@ def _delete_file_after_commit(field_file):
 
 
 @receiver(post_delete, sender=MoodboardPhoto)
-def delete_photo_file(sender, instance, **kwargs):
-    if instance.image:
-        _delete_file_after_commit(instance.image)
+def delete_photo_files(sender, instance, **kwargs):
+    for field_file in (instance.image, instance.thumb):
+        if field_file:
+            _delete_file_after_commit(field_file)
 
 
 @receiver(pre_save, sender=MoodboardPhoto)
-def delete_replaced_photo_file(sender, instance, **kwargs):
-    # Uploading a new image for an existing photo would otherwise orphan the old file.
+def delete_replaced_photo_files(sender, instance, **kwargs):
+    # A new image or thumbnail for an existing photo would otherwise orphan the old file.
     if not instance.pk:
         return
-    old = MoodboardPhoto.objects.filter(pk=instance.pk).values_list('image', flat=True).first()
-    if old and old != instance.image.name:
-        _delete_file_after_commit(MoodboardPhoto(image=old).image)
+    old = MoodboardPhoto.objects.filter(pk=instance.pk).values('image', 'thumb').first() or {}
+    for field in ('image', 'thumb'):
+        old_name = old.get(field)
+        if old_name and old_name != getattr(instance, field).name:
+            _delete_file_after_commit(getattr(MoodboardPhoto(**{field: old_name}), field))
