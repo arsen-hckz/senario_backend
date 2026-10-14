@@ -1,6 +1,7 @@
 import os
 
 from django.db import migrations
+from django.db.models import Q
 
 
 def backfill_thumbnails(apps, schema_editor):
@@ -8,7 +9,9 @@ def backfill_thumbnails(apps, schema_editor):
     from moodboard.image_utils import make_thumbnail
 
     MoodboardPhoto = apps.get_model('moodboard', 'MoodboardPhoto')
-    for photo in MoodboardPhoto.objects.exclude(image='').exclude(image__isnull=True).filter(thumb=''):
+    # The new column is NULL on existing rows, '' after a cleared upload.
+    missing = Q(thumb='') | Q(thumb__isnull=True)
+    for photo in MoodboardPhoto.objects.exclude(image='').exclude(image__isnull=True).filter(missing):
         try:
             with photo.image.open('rb') as f:
                 thumb = make_thumbnail(f, name=os.path.basename(photo.image.name))

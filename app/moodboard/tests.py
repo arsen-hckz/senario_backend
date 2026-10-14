@@ -137,17 +137,18 @@ class MoodboardTests(APITestCase):
         from django.apps import apps
         self.auth(self.staff)
         res = self.client.post('/api/moodboard/admin/', {'title': 'Old', 'image': self.big_jpeg()}, format='multipart')
-        MoodboardPhoto.objects.filter(pk=res.data['id']).update(thumb='')  # as before thumbnails existed
+        # Production's real starting state: the new column is NULL on old rows.
+        MoodboardPhoto.objects.filter(pk=res.data['id']).update(thumb=None)
         MoodboardPhoto.objects.create(title='Missing file', image='moodboard/gone.jpg')
-        MoodboardPhoto.objects.filter(title='Missing file').update(thumb='')
+        MoodboardPhoto.objects.filter(title='Missing file').update(thumb=None)
 
-        migration = importlib.import_module('moodboard.migrations.0003_backfill_thumbnails')
+        migration = importlib.import_module('moodboard.migrations.0004_backfill_thumbnails_null')
         migration.backfill_thumbnails(apps, None)
 
         photo = MoodboardPhoto.objects.get(pk=res.data['id'])
         with Image.open(photo.thumb.path) as thumb:
             self.assertEqual(max(thumb.size), 1000)
-        self.assertEqual(MoodboardPhoto.objects.get(title='Missing file').thumb.name, '')
+        self.assertFalse(MoodboardPhoto.objects.get(title='Missing file').thumb)
 
     def test_replacing_or_deleting_an_upload_deletes_the_old_file(self):
         self.auth(self.staff)
