@@ -52,7 +52,11 @@ class CreateOrderTests(APITestCase):
         ProductVariant.objects.create(product=self.product, size='M', stock=5)
         res = self.create()
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Please choose a size for: Tee', str(res.data))
         self.assertFalse(Order.objects.exists())
+
+        cart = self.client.get('/api/cart/').data
+        self.assertTrue(cart['items'][0]['needs_size'])
 
     def test_creates_order_with_server_side_total_and_empties_cart(self):
         res = self.create()

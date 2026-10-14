@@ -1,10 +1,14 @@
 import logging
 import uuid
+from datetime import timedelta
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import permissions, status
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -20,6 +24,19 @@ logger = logging.getLogger(__name__)
 # Viva webhook EventTypeId for "Transaction Payment Created".
 TRANSACTION_PAYMENT_CREATED = 1796
 
+# A checkout started this recently is handed out again instead of creating
+# another Viva order: a double click or a quick retry shouldn't leave a trail
+# of abandoned payment attempts. Well inside the checkout page's lifetime.
+REUSE_CHECKOUT_FOR = timedelta(minutes=5)
+
+# Verification calls to Viva per order code per 10 minutes. Real deliveries
+# need one or two; past that it's someone replaying their own order code.
+WEBHOOK_VERIFY_LIMIT = 10
+
+
+class CheckoutRateThrottle(UserRateThrottle):
+    scope = 'checkout'
+
 
 def _is_guid(value):
     try:
@@ -31,6 +48,7 @@ def _is_guid(value):
 
 class CreateCheckoutView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
+    throttle_classes = [CheckoutRateThrottle]
 
     def post(self, request, order_id):
         order = get_object_or_404(Order, pk=order_id, user=request.user)
@@ -53,6 +71,12 @@ class CreateCheckoutView(APIView):
                 {'detail': 'Some items are no longer available: ' + ', '.join(unavailable)},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        recent = order.payments.filter(
+            status=Payment.Status.PENDING, created_at__gte=timezone.now() - REUSE_CHECKOUT_FOR,
+        ).first()
+        if recent is not None:
+            return Response({'checkout_url': viva_client.checkout_url(recent.viva_order_code)})
 
         try:
             order_code = viva_client.create_order(
@@ -100,6 +124,14 @@ class VivaWebhookView(APIView):
         payment = Payment.objects.filter(viva_order_code=order_code).first()
         if payment is None or payment.status != Payment.Status.PENDING:
             return Response(status=status.HTTP_200_OK)
+
+        # Each delivery makes us call Viva; cap it per order code so a replayed
+        # code can't hammer Viva's API. 429 is non-2xx, so Viva retries later.
+        verify_key = f'viva-webhook-verify:{order_code}'
+        cache.add(verify_key, 0, timeout=600)
+        if cache.incr(verify_key) > WEBHOOK_VERIFY_LIMIT:
+            logger.warning('Webhook verification limit hit for Viva order %s', order_code)
+            return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         # Never trust the webhook body for the actual payment facts — Viva
         # doesn't sign these POSTs, so re-fetch the transaction ourselves

@@ -122,6 +122,37 @@ class PaymentsTests(APITestCase):
         self.assertEqual(self.order.status, Order.Status.CONFIRMED)
         self.assertEqual(self.variant.stock, 1)  # 3 - qty(2)
 
+    @patch('payments.viva_client.create_order')
+    def test_repeated_checkout_reuses_the_recent_attempt(self, mock_create_order):
+        mock_create_order.side_effect = ['111111111111111', '222222222222222']
+        self.auth(self.user)
+        first = self.client.post(f'/api/payments/checkout/{self.order.id}/')
+        second = self.client.post(f'/api/payments/checkout/{self.order.id}/')
+        self.assertEqual(first.data['checkout_url'], second.data['checkout_url'])
+        self.assertEqual(mock_create_order.call_count, 1)
+        self.assertEqual(Payment.objects.count(), 1)
+
+        # Once that attempt is older than the reuse window, a fresh one is made.
+        from datetime import timedelta
+        from django.utils import timezone
+        Payment.objects.update(created_at=timezone.now() - timedelta(minutes=10))
+        third = self.client.post(f'/api/payments/checkout/{self.order.id}/')
+        self.assertIn('222222222222222', third.data['checkout_url'])
+
+    @patch('payments.viva_client.get_transaction')
+    def test_webhook_verification_is_capped_per_order_code(self, mock_get_transaction):
+        cache.clear()
+        Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        mock_get_transaction.side_effect = VivaTransactionNotFound('nope')
+        codes = [
+            self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json').status_code
+            for _ in range(12)
+        ]
+        self.assertEqual(codes[:10], [status.HTTP_404_NOT_FOUND] * 10)
+        self.assertEqual(codes[10:], [status.HTTP_429_TOO_MANY_REQUESTS] * 2)
+        self.assertEqual(mock_get_transaction.call_count, 10)
+        cache.clear()
+
     @patch('payments.viva_client.get_transaction')
     def test_webhook_unknown_transaction_is_retried_but_does_not_email_staff(self, mock_get_transaction):
         from django.core import mail

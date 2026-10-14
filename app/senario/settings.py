@@ -126,6 +126,7 @@ REST_FRAMEWORK = {
         'password-reset': '5/hour',
         'password-reset-confirm': '20/hour',
         'password-change': '5/min',
+        'checkout': '20/hour',
     },
 }
 

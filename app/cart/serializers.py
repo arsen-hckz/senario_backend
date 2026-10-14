@@ -7,10 +7,11 @@ class CartItemSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
     variant = ProductVariantSerializer(read_only=True)
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    needs_size = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = CartItem
-        fields = ('id', 'product', 'variant', 'qty', 'subtotal')
+        fields = ('id', 'product', 'variant', 'qty', 'subtotal', 'needs_size')
 
 
 class CartSerializer(serializers.ModelSerializer):

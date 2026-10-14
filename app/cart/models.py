@@ -31,3 +31,8 @@ class CartItem(models.Model):
     @property
     def subtotal(self):
         return self.product.effective_price * self.qty
+
+    @property
+    def needs_size(self):
+        # Only possible for items added before sizes were required.
+        return self.variant_id is None and self.product.variants.exists()

@@ -47,6 +47,13 @@ class CreateOrderSerializer(serializers.Serializer):
         items = list(cart.items.select_related('product', 'variant'))
         if not items:
             raise serializers.ValidationError('Your cart is empty.')
+        # Added before sizes were required: say what to do, not "unavailable".
+        needs_size = [item.product.name for item in items if item.needs_size]
+        if needs_size:
+            raise serializers.ValidationError(
+                'Please choose a size for: ' + ', '.join(needs_size)
+                + '. Remove it from your cart and add it again with a size.'
+            )
         unavailable = unavailable_items(
             (item.product.name, item.product, item.variant, item.qty) for item in items
         )
