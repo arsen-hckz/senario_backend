@@ -201,6 +201,12 @@ EMAIL_BACKEND = config(
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=f'{BRAND_NAME} <no-reply@senario.app>')
 SUPPORT_EMAIL = config('SUPPORT_EMAIL', default='Senarioproject@gmail.com')
 
+# Order receipts: the seller block (lines separated by "|", e.g.
+# "Senario|Street 1, 10000 Athens|VAT ID 123456789") and the VAT rate the
+# prices already include.
+BUSINESS_DETAILS = config('BUSINESS_DETAILS', default=BRAND_NAME)
+VAT_RATE_PERCENT = config('VAT_RATE_PERCENT', default='24')
+
 ANYMAIL = {
     'RESEND_API_KEY': config('RESEND_API_KEY', default=''),
 }

@@ -13,7 +13,7 @@ class OrderListView(generics.ListAPIView):
     serializer_class = OrderSerializer
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user).prefetch_related('items').order_by('-created_at')
+        return Order.objects.filter(user=self.request.user).prefetch_related('items__product__images').order_by('-created_at')
 
 
 class OrderDetailView(generics.RetrieveAPIView):
@@ -32,7 +32,7 @@ class CreateOrderView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order = serializer.save(user=request.user)
-        return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
+        return Response(OrderSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 class AdminOrderListView(generics.ListAPIView):
@@ -41,7 +41,7 @@ class AdminOrderListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        qs = Order.objects.prefetch_related('items').order_by('-created_at')
+        qs = Order.objects.prefetch_related('items__product__images').order_by('-created_at')
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)

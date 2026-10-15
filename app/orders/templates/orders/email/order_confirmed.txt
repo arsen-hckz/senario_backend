@@ -1,0 +1,21 @@
+{% autoescape off %}Hey{% if first_name %} {{ first_name }}{% endif %},
+
+Thank you for your order - your payment went through and order #{{ order.pk }} is confirmed. We'll let you know when it ships.
+
+{% for item in items %}{{ item.qty }} x {{ item.name }}{% if item.size %} ({{ item.size }}){% endif %}  {{ item.subtotal }}
+{% endfor %}
+Total paid: {{ total }} (incl. VAT {{ vat_rate }}%: {{ vat }})
+
+Shipping to:
+{{ order.full_name }}
+{{ order.address }}
+{{ order.postal_code }} {{ order.city }}, {{ order.country }}{% if order.phone %}
+{{ order.phone }}{% endif %}
+
+View your order:
+{{ action_url }}
+
+Your receipt is attached as a PDF. Questions about your order? Just reply to this email.
+
+(c) {{ current_year }} {{ brand_name }}. All rights reserved.
+{% endautoescape %}

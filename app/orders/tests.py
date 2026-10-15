@@ -160,3 +160,54 @@ class AdminOrderStatusTests(APITestCase):
         OrderAdmin(Order, django_admin.site).save_model(request, self.order, None, True)
         self.variant.refresh_from_db()
         self.assertEqual(self.variant.stock, 3)
+
+
+class ReceiptTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='buyer@example.com', password='testpass123')
+        self.order = Order.objects.create(
+            user=self.user, total=Decimal('100.00'), email='buyer@example.com', phone='+30 690 000 0000',
+            full_name='Γιάννης Παπαδόπουλος', address='Ερμού 1', city='Αθήνα', country='GR', postal_code='10563',
+        )
+        OrderItem.objects.create(order=self.order, product_name='Black Tee', size='M', price=Decimal('50.00'), qty=2)
+
+    def test_vat_split_adds_up_to_the_total(self):
+        from .receipt import vat_breakdown
+        self.assertEqual(vat_breakdown(Decimal('100.00')), (Decimal('80.65'), Decimal('19.35')))
+        for total in ('0.01', '19.99', '24.50', '1234.56'):
+            net, vat = vat_breakdown(Decimal(total))
+            self.assertEqual(net + vat, Decimal(total))
+
+    def test_pdf_receipt_renders_greek_text(self):
+        from .receipt import build_receipt_pdf
+        pdf = build_receipt_pdf(self.order, '11111111-1111-4111-8111-111111111111')
+        self.assertTrue(pdf.startswith(b'%PDF'))
+        self.assertIn(b'DejaVuSans', pdf)  # embedded font that has Greek letters
+
+    def test_admin_resend_action_emails_the_customer(self):
+        from django.contrib import admin as django_admin
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.core import mail
+        from django.test import RequestFactory
+        from .admin import OrderAdmin
+
+        request = RequestFactory().post('/admin/')
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        OrderAdmin(Order, django_admin.site).resend_confirmation(request, Order.objects.filter(pk=self.order.pk))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('Γιάννης', mail.outbox[0].body)
+
+    def test_order_items_include_the_product_photo(self):
+        import tempfile
+        from django.test import override_settings
+        from products.models import ProductImage
+        from moodboard.tests import make_png
+
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            product = Product.objects.create(name='Black Tee', slug='black-tee', price=Decimal('50.00'))
+            ProductImage.objects.create(product=product, image=make_png('tee.png'))
+            self.order.items.update(product=product)
+            self.client.force_authenticate(self.user)
+            item = self.client.get('/api/orders/').data['results'][0]['items'][0]
+        self.assertTrue(item['image'].startswith('http://testserver/media/products/'))

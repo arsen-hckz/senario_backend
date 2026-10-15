@@ -12,6 +12,7 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from orders.emails import send_order_confirmation
 from orders.models import Order
 from orders.stock import decrement_order_stock, order_unavailable_items
 
@@ -188,5 +189,8 @@ class VivaWebhookView(APIView):
             order.save(update_fields=['status', 'updated_at'])
 
             decrement_order_stock(order, logger)
+
+            # After commit: only email once the payment is really recorded.
+            db_transaction.on_commit(lambda: send_order_confirmation(order, locked_payment.viva_transaction_id))
 
         return Response(status=status.HTTP_200_OK)

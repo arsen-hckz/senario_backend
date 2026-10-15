@@ -122,6 +122,44 @@ class PaymentsTests(APITestCase):
         self.assertEqual(self.order.status, Order.Status.CONFIRMED)
         self.assertEqual(self.variant.stock, 1)  # 3 - qty(2)
 
+    @patch('payments.viva_client.get_transaction')
+    def test_webhook_emails_the_confirmation_with_pdf_receipt(self, mock_get_transaction):
+        from django.core import mail
+        Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        mock_get_transaction.return_value = {'orderCode': 999, 'statusId': 'F', 'amount': 24.5}
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+            self.assertEqual(len(mail.outbox), 0)  # not before the payment is committed
+
+        self.assertEqual(len(mail.outbox), 1)
+        message = mail.outbox[0]
+        self.assertEqual(message.to, ['buyer@example.com'])  # order has no email: falls back to the account
+        self.assertIn(f'order #{self.order.pk} is confirmed', message.subject)
+        self.assertIn('2 x Tee (M)', message.body)
+        pdfs = [a for a in message.attachments if getattr(a, 'mimetype', None) == 'application/pdf'
+                or (isinstance(a, tuple) and a[2] == 'application/pdf')]
+        self.assertEqual(len(pdfs), 1)
+        content = pdfs[0].content if hasattr(pdfs[0], 'content') else pdfs[0][1]
+        self.assertTrue(content.startswith(b'%PDF'))
+
+        # A repeated delivery of the same event doesn't email again.
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+        self.assertEqual(len(mail.outbox), 1)
+
+    @patch('orders.emails.send_branded_email', side_effect=RuntimeError('mail down'))
+    @patch('payments.viva_client.get_transaction')
+    def test_mail_failure_does_not_fail_the_webhook(self, mock_get_transaction, _send):
+        payment = Payment.objects.create(order=self.order, viva_order_code='999', amount=self.order.total)
+        mock_get_transaction.return_value = {'orderCode': 999, 'statusId': 'F', 'amount': 24.5}
+        with self.assertLogs('orders.emails', level='ERROR'):
+            with self.captureOnCommitCallbacks(execute=True):
+                res = self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.PAID)
+
     @patch('payments.viva_client.create_order')
     def test_repeated_checkout_reuses_the_recent_attempt(self, mock_create_order):
         mock_create_order.side_effect = ['111111111111111', '222222222222222']

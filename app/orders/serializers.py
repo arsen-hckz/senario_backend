@@ -7,10 +7,21 @@ from cart.models import Cart
 
 class OrderItemSerializer(serializers.ModelSerializer):
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    # The product's current cover photo; None once the product or its photos are gone.
+    image = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ('id', 'product_name', 'size', 'price', 'qty', 'subtotal')
+        fields = ('id', 'product_name', 'size', 'price', 'qty', 'subtotal', 'image')
+
+    def get_image(self, obj):
+        if obj.product is None:
+            return None
+        first = next(iter(obj.product.images.all()), None)  # uses the prefetch when present
+        if first is None:
+            return None
+        request = self.context.get('request')
+        return request.build_absolute_uri(first.image.url) if request else first.image.url
 
 
 class OrderSerializer(serializers.ModelSerializer):
