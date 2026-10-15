@@ -1,5 +1,8 @@
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.db import transaction
+
 from .models import Order, OrderItem
+from .status import apply_status_change
 
 
 class OrderItemInline(admin.TabularInline):
@@ -17,3 +20,14 @@ class OrderAdmin(admin.ModelAdmin):
     readonly_fields = ('user', 'total', 'created_at')
     list_editable = ('status',)
     inlines = (OrderItemInline,)
+
+    def save_model(self, request, obj, form, change):
+        # Same stock/refund handling as the storefront admin's status dropdown.
+        with transaction.atomic():
+            old_status = Order.objects.select_for_update().filter(pk=obj.pk).values_list('status', flat=True).first()
+            super().save_model(request, obj, form, change)
+            if change and old_status and apply_status_change(obj, old_status):
+                self.message_user(
+                    request, f'Order #{obj.pk} was paid through Viva: refund it in the Viva portal.',
+                    level=messages.WARNING,
+                )

@@ -30,6 +30,11 @@ class ProductListCacheTests(APITestCase):
     def product_cache_keys(self):
         return get_redis_connection('default').keys('*products:*')
 
+    def test_nul_in_query_is_a_400_not_a_500(self):
+        """Postgres rejects NUL in text: these were 500s, each emailing staff."""
+        for url in ('/api/products/?search=%00', '/api/products/?category=a%00', '/api/products/?x%00=1'):
+            self.assertEqual(self.client.get(url).status_code, status.HTTP_400_BAD_REQUEST, url)
+
     def test_junk_query_params_share_one_cache_entry(self):
         """Arbitrary params used to each create their own cache entry,
         letting anyone fill Redis with one request per made-up URL."""
@@ -221,6 +226,20 @@ class ProductSizesTests(APITestCase):
         self.assertEqual(self.sizes_of(res), [('M', 7), ('XXL', 3)])
         res = self.save([], pk=pk)
         self.assertEqual(self.sizes_of(res), [])
+
+    def test_sale_price_must_be_between_zero_and_price(self):
+        for bad in ('0', '50.00', '60.00'):
+            res = self.save([], sale_price=bad)
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, bad)
+            self.assertIn('sale_price', res.data)
+        pk = self.save([], sale_price='40.00').data['id']
+        # Lowering the price under the existing sale price is caught too.
+        res = self.client.patch(f'/api/products/admin/{pk}/', {'price': '30.00'}, format='multipart')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # An empty sale price (the admin form's cleared box) ends the sale.
+        res = self.client.patch(f'/api/products/admin/{pk}/', {'sale_price': ''}, format='multipart')
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertIsNone(res.data['sale_price'])
 
     def test_patch_without_sizes_leaves_them_alone(self):
         pk = self.save([{'size': 'S', 'stock': 4}]).data['id']

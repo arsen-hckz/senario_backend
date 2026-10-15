@@ -87,3 +87,76 @@ class CreateOrderTests(APITestCase):
                 self.create()
         self.assertFalse(Order.objects.exists())
         self.assertTrue(self.cart.items.exists())
+
+
+class AdminOrderStatusTests(APITestCase):
+    """Stock is held while an order is confirmed/shipped/delivered; staff
+    moving it in or out of that by hand takes or gives back stock."""
+
+    def setUp(self):
+        from products.models import ProductVariant
+        staff = User.objects.create_user(email='staff@example.com', password='testpass123', is_staff=True)
+        self.client.force_authenticate(user=staff)
+        self.product = Product.objects.create(name='Hoodie', slug='hoodie', price=Decimal('50.00'), stock=0)
+        self.variant = ProductVariant.objects.create(product=self.product, size='M', stock=5)
+        self.order = Order.objects.create(
+            user=staff, total=Decimal('100.00'), full_name='A', address='B', city='C', country='GR', postal_code='1',
+        )
+        OrderItem.objects.create(
+            order=self.order, product=self.product, variant=self.variant,
+            product_name='Hoodie', size='M', price=Decimal('50.00'), qty=2,
+        )
+
+    def set_status(self, value):
+        res = self.client.patch(f'/api/orders/admin/{self.order.pk}/', {'status': value}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.variant.refresh_from_db()
+        return res
+
+    def test_confirming_by_hand_takes_stock_and_cancelling_gives_it_back(self):
+        self.set_status('confirmed')
+        self.assertEqual(self.variant.stock, 3)
+        self.set_status('shipped')
+        self.assertEqual(self.variant.stock, 3)
+        res = self.set_status('cancelled')
+        self.assertEqual(self.variant.stock, 5)
+        self.assertFalse(res.data['refund_needed'])
+        self.set_status('pending')
+        self.assertEqual(self.variant.stock, 5)
+
+    def test_cancelling_a_viva_paid_order_flags_the_refund(self):
+        from payments.models import Payment
+        payment = Payment.objects.create(
+            order=self.order, viva_order_code='123', amount=Decimal('100.00'), status=Payment.Status.PAID,
+        )
+        self.order.status = Order.Status.CONFIRMED
+        self.order.save()
+        self.variant.stock = 3
+        self.variant.save()
+
+        res = self.set_status('cancelled')
+        self.assertTrue(res.data['refund_needed'])
+        self.assertEqual(self.variant.stock, 5)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.Status.REFUND_NEEDED)
+
+    def test_customers_cannot_change_status(self):
+        self.client.force_authenticate(user=User.objects.create_user(email='c@example.com', password='testpass123'))
+        res = self.client.patch(f'/api/orders/admin/{self.order.pk}/', {'status': 'confirmed'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock, 5)
+
+    def test_django_admin_status_change_takes_stock_too(self):
+        from django.contrib import admin as django_admin
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+        from .admin import OrderAdmin
+
+        request = RequestFactory().post('/admin/')
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        self.order.status = Order.Status.CONFIRMED
+        OrderAdmin(Order, django_admin.site).save_model(request, self.order, None, True)
+        self.variant.refresh_from_db()
+        self.assertEqual(self.variant.stock, 3)

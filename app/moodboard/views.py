@@ -37,10 +37,12 @@ class MoodboardReorderView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        photos = {photo.id: photo for photo in MoodboardPhoto.objects.filter(id__in=order)}
+        # Keyed by string so ids sent as "3" match too, and junk ids are
+        # skipped rather than crashing the id__in query.
+        photos = {str(photo.id): photo for photo in MoodboardPhoto.objects.all()}
         to_update = []
         for index, photo_id in enumerate(order):
-            photo = photos.get(photo_id)
+            photo = photos.get(str(photo_id))
             if photo is None:
                 continue
             photo.order = index

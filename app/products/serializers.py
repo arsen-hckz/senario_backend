@@ -125,6 +125,15 @@ class ProductSerializer(serializers.ModelSerializer):
             variant.delete()
 
     def validate(self, attrs):
+        # A sale price of 0 would read as "no sale" (effective_price), and one
+        # at or above the price would charge more than the struck-out price.
+        price = attrs.get('price', getattr(self.instance, 'price', None))
+        sale_price = attrs.get('sale_price', getattr(self.instance, 'sale_price', None))
+        if sale_price is not None and price is not None and not 0 < sale_price < price:
+            raise serializers.ValidationError(
+                {'sale_price': 'The sale price must be more than 0 and less than the price.'}
+            )
+
         new = len(attrs.get('uploaded_images', []))
         if new:
             existing = 0

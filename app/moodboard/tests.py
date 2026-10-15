@@ -183,6 +183,17 @@ class MoodboardTests(APITestCase):
         self.assertEqual(p1.order, 1)
         self.assertEqual(p2.order, 2)
 
+    def test_reorder_accepts_string_ids_and_skips_junk(self):
+        p1 = MoodboardPhoto.objects.create(title='A', external_src='a.jpg', order=0)
+        p2 = MoodboardPhoto.objects.create(title='B', external_src='b.jpg', order=1)
+
+        self.auth(self.staff)
+        res = self.client.post(
+            '/api/moodboard/admin/reorder/', {'order': ['junk', str(p2.id), p1.id, None]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([p['id'] for p in res.data], [p2.id, p1.id])
+
     def test_reorder_requires_staff(self):
         self.auth(self.customer)
         res = self.client.post('/api/moodboard/admin/reorder/', {'order': []}, format='json')

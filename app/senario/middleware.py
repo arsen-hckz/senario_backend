@@ -1,5 +1,25 @@
 from django.core.cache import cache
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseBadRequest
+
+
+class RejectNullBytesMiddleware:
+    """Answers 400 when the path or query string contains a NUL character.
+
+    Postgres refuses NUL inside text, so `?search=%00` crashed the query with
+    a 500 — and every 500 emails staff, so anyone could flood the inbox (and
+    use up the email quota that verification and reset emails need).
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if '\x00' in request.path or any(
+            '\x00' in key or any('\x00' in value for value in values)
+            for key, values in request.GET.lists()
+        ):
+            return HttpResponseBadRequest('Invalid characters in request.')
+        return self.get_response(request)
 
 
 class AdminLoginThrottleMiddleware:

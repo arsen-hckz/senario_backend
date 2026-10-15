@@ -35,6 +35,22 @@ def order_unavailable_items(order):
     return unavailable_items(lines)
 
 
+def increment_order_stock(order):
+    """Put an order's quantities back on stock (it was cancelled after its
+    stock was taken). Must run inside a transaction."""
+    for item in order.items.all():
+        if item.variant_id:
+            row = ProductVariant.objects.select_for_update().filter(pk=item.variant_id).first()
+        elif item.product_id:
+            row = Product.objects.select_for_update().filter(pk=item.product_id).first()
+        else:
+            row = None
+        if row is None:
+            continue
+        row.stock += item.qty
+        row.save(update_fields=['stock'])
+
+
 def decrement_order_stock(order, logger):
     """Take an order's quantities off stock. Must run inside a transaction.
 

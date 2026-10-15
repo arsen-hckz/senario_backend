@@ -1,9 +1,11 @@
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 
 from .models import Order
 from .serializers import OrderSerializer, CreateOrderSerializer, OrderStatusSerializer
+from .status import apply_status_change
 
 
 class OrderListView(generics.ListAPIView):
@@ -51,3 +53,15 @@ class AdminOrderUpdateView(generics.UpdateAPIView):
     serializer_class = OrderStatusSerializer
     queryset = Order.objects.all()
     http_method_names = ('patch',)
+
+    def update(self, request, *args, **kwargs):
+        with transaction.atomic():
+            # Locked like the payment webhook does, so a payment arriving
+            # mid-change can't take or give back stock twice.
+            order = get_object_or_404(Order.objects.select_for_update(), pk=kwargs['pk'])
+            old_status = order.status
+            serializer = self.get_serializer(order, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            refund_needed = apply_status_change(order, old_status)
+        return Response(dict(serializer.data, refund_needed=refund_needed))
