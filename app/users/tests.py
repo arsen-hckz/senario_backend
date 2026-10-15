@@ -234,7 +234,7 @@ class PasswordResetTests(APITestCase):
         return self.client.post('/api/auth/password-reset/', {'email': email}, format='json')
 
     def link_params(self):
-        match = re.search(r'reset-password\.html\?uid=([^&\s]+)&token=([^\s"<]+)', mail.outbox[-1].body)
+        match = re.search(r'reset-password\?uid=([^&\s]+)&token=([^\s"<]+)', mail.outbox[-1].body)
         self.assertIsNotNone(match)
         return match.group(1), match.group(2)
 
@@ -248,7 +248,7 @@ class PasswordResetTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ['user@example.com'])
-        self.assertIn('https://shop.example/reset-password.html?uid=', mail.outbox[0].body)
+        self.assertIn('https://shop.example/reset-password?uid=', mail.outbox[0].body)
 
     def test_request_for_unknown_email_is_indistinguishable(self):
         known = self.request_reset()

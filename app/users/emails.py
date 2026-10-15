@@ -16,7 +16,7 @@ LOGO_CID = 'brand-logo'
 
 def build_verification_url(pending, request=None):
     if settings.FRONTEND_URL:
-        return f'{settings.FRONTEND_URL.rstrip("/")}/verify-email.html?token={pending.token}'
+        return f'{settings.FRONTEND_URL.rstrip("/")}/verify-email?token={pending.token}'
 
     path = reverse('auth-verify-email', kwargs={'token': pending.token})
     if request is not None:
@@ -35,7 +35,7 @@ def _frontend_url(page, request=None):
 def build_password_reset_url(user, request=None):
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
-    return f'{_frontend_url("reset-password.html", request)}?uid={uid}&token={token}'
+    return f'{_frontend_url("reset-password", request)}?uid={uid}&token={token}'
 
 
 def _send_branded_email(to, subject, template, context):
@@ -91,6 +91,6 @@ def send_account_exists_email(user, request=None):
     emails are customers."""
     _send_branded_email(user.email, f'You already have a {settings.BRAND_NAME} account', 'account_exists', {
         'first_name': user.first_name,
-        'action_url': _frontend_url('login.html', request),
-        'reset_url': _frontend_url('forgot-password.html', request),
+        'action_url': _frontend_url('login', request),
+        'reset_url': _frontend_url('forgot-password', request),
     })
