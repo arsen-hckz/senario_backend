@@ -212,6 +212,17 @@ class ProductSizesTests(APITestCase):
     def sizes_of(self, res):
         return [(v['size'], v['stock']) for v in res.data['variants']]
 
+    def test_out_of_range_stock_or_nul_size_is_a_400_not_a_500(self):
+        self.assertEqual(self.save([{'size': 'M', 'stock': 3_000_000_000}]).status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.save([{'size': 'M\x00', 'stock': 1}]).status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_greek_name_gets_an_openable_slug(self):
+        first = self.save([], name='Μαύρο φούτερ')
+        second = self.save([], name='Γκρι φούτερ')
+        self.assertEqual((first.data['slug'], second.data['slug']), ('product', 'product-1'))
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get('/api/products/product-1/').status_code, status.HTTP_200_OK)
+
     def test_create_with_sizes_returns_them_in_size_order(self):
         res = self.save([{'size': 'XL', 'stock': 1}, {'size': 'S', 'stock': 4}, {'size': 'M', 'stock': 0}])
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)

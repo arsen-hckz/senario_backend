@@ -43,6 +43,14 @@ class CreateOrderTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual((res.data['email'], res.data['phone']), ('buyer@example.com', '+30 690 000 0000'))
 
+    def test_order_creation_is_rate_limited_per_account(self):
+        codes = []
+        for _ in range(21):
+            CartItem.objects.get_or_create(cart=self.cart, product=self.product, defaults={'qty': 1})
+            codes.append(self.create().status_code)
+        self.assertEqual(codes[:20], [status.HTTP_201_CREATED] * 20)
+        self.assertEqual(codes[20], status.HTTP_429_TOO_MANY_REQUESTS)
+
     def test_checkout_email_overrides_account_email(self):
         res = self.client.post('/api/orders/create/', dict(ADDRESS, email='gift@example.com'), format='json')
         self.assertEqual(Order.objects.get(pk=res.data['id']).email, 'gift@example.com')

@@ -2,6 +2,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 
 from .models import Order
 from .serializers import OrderSerializer, CreateOrderSerializer, OrderStatusSerializer
@@ -24,9 +25,16 @@ class OrderDetailView(generics.RetrieveAPIView):
         return get_object_or_404(Order, pk=self.kwargs['pk'], user=self.request.user)
 
 
+class CreateOrderRateThrottle(UserRateThrottle):
+    # Nobody places 20 orders an hour; past that it's a script filling the
+    # orders table (and the staff order list) with pending orders.
+    scope = 'order-create'
+
+
 class CreateOrderView(generics.CreateAPIView):
     permission_classes = (permissions.IsAuthenticated,)
     serializer_class = CreateOrderSerializer
+    throttle_classes = [CreateOrderRateThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

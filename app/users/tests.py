@@ -375,3 +375,48 @@ class PasswordChangeTests(APITestCase):
         refresh = lambda token: self.client.post('/api/auth/refresh/', {'refresh': token}, format='json')
         self.assertEqual(refresh(other_device['refresh']).status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(refresh(res.data['refresh']).status_code, status.HTTP_200_OK)
+
+
+class EmailFloodTests(APITestCase):
+    """The per-IP throttles alone let a few IPs flood one inbox."""
+
+    def setUp(self):
+        cache.clear()
+        User.objects.create_user(email='victim@example.com', password='Str0ng-Pass-123')
+
+    def test_one_address_gets_at_most_three_of_each_email_per_hour(self):
+        for i in range(10):
+            ip = f'198.51.100.{i}'
+            reset = self.client.post('/api/auth/password-reset/', {'email': 'victim@example.com'},
+                                     format='json', REMOTE_ADDR=ip)
+            register = self.client.post('/api/auth/register/', {'email': 'Victim@example.com', 'password': 'Zq9-long-pass!'},
+                                        format='json', REMOTE_ADDR=ip)
+            # Same answers as always, so the cap reveals nothing about the account.
+            self.assertEqual(reset.status_code, status.HTTP_200_OK)
+            self.assertEqual(register.status_code, status.HTTP_201_CREATED)
+        subjects = [m.subject for m in mail.outbox]
+        self.assertEqual(sum('Reset' in s for s in subjects), 3)
+        self.assertEqual(sum('already have' in s for s in subjects), 3)
+
+    def test_resend_verification_is_capped_per_address(self):
+        self.client.post('/api/auth/register/', {'email': 'new@example.com', 'password': 'Zq9-long-pass!'}, format='json')
+        for i in range(10):
+            self.client.post('/api/auth/resend-verification/', {'email': 'new@example.com'},
+                             format='json', REMOTE_ADDR=f'198.51.100.{i}')
+        self.assertEqual(len(mail.outbox), 1 + 3)
+
+
+class LogoutTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        User.objects.create_user(email='user@example.com', password='Str0ng-Pass-123')
+
+    def test_logout_revokes_refresh_token_even_with_an_expired_access_token(self):
+        tokens = self.client.post('/api/auth/login/', {'email': 'user@example.com', 'password': 'Str0ng-Pass-123'},
+                                  format='json').data
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer expired-or-garbage')
+        res = self.client.post('/api/auth/logout/', {'refresh': tokens['refresh']}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_205_RESET_CONTENT)
+        self.client.credentials()
+        res = self.client.post('/api/auth/refresh/', {'refresh': tokens['refresh']}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)

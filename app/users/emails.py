@@ -1,7 +1,9 @@
+import hashlib
 from datetime import date
 from email.mime.image import MIMEImage
 
 from django.conf import settings
+from django.core.cache import cache
 from django.contrib.auth.tokens import default_token_generator
 from django.contrib.staticfiles.finders import find
 from django.core.mail import EmailMultiAlternatives
@@ -12,6 +14,20 @@ from django.utils.http import urlsafe_base64_encode
 
 LOGO_STATIC_PATH = 'users/email/logo.jpg'
 LOGO_CID = 'brand-logo'
+
+# Account emails (verify, reset, "you already have an account") per address
+# per hour. The per-IP throttles alone let anyone with a few IPs flood one
+# inbox, and burn the sending quota real customers' emails need.
+EMAILS_PER_ADDRESS_PER_HOUR = 3
+
+
+def address_quota_ok(kind, address):
+    """True if another `kind` email may go to `address` this hour. Callers
+    skip the send silently when it's False, so responses stay identical."""
+    digest = hashlib.sha256(address.strip().lower().encode()).hexdigest()
+    key = f'email-quota:{kind}:{digest}'
+    cache.add(key, 0, timeout=60 * 60)
+    return cache.incr(key) <= EMAILS_PER_ADDRESS_PER_HOUR
 
 
 def build_verification_url(pending, request=None):

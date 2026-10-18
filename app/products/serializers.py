@@ -6,6 +6,7 @@ from rest_framework import serializers
 from .models import Category, Product, ProductImage, ProductVariant
 
 MAX_IMAGES_PER_PRODUCT = 12
+MAX_STOCK = 1_000_000
 
 # Display order for sizes; anything else (e.g. "One Size") goes after these.
 SIZE_ORDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']
@@ -92,13 +93,14 @@ class ProductSerializer(serializers.ModelSerializer):
             if not isinstance(entry, dict):
                 raise serializers.ValidationError('Each size must be an object with "size" and "stock".')
             size = str(entry.get('size') or '').strip()
-            if not size or len(size) > 10:
+            if not size or len(size) > 10 or '\x00' in size:
                 raise serializers.ValidationError('Each size needs a name of up to 10 characters.')
             if size.upper() in seen:
                 raise serializers.ValidationError(f'Size {size} is listed twice.')
             stock = entry.get('stock')
-            if isinstance(stock, bool) or not isinstance(stock, int) or stock < 0:
-                raise serializers.ValidationError(f'Stock for size {size} must be a whole number, 0 or more.')
+            # Upper bound: the column is a 32-bit integer; past it the save was a 500.
+            if isinstance(stock, bool) or not isinstance(stock, int) or not 0 <= stock <= MAX_STOCK:
+                raise serializers.ValidationError(f'Stock for size {size} must be a whole number from 0 to {MAX_STOCK:,}.')
             seen.add(size.upper())
             cleaned.append({'size': size, 'stock': stock})
         return cleaned
@@ -181,7 +183,9 @@ class ProductSerializer(serializers.ModelSerializer):
         )
 
     def _unique_slug(self, name, pk=None):
-        base = slugify(name)
+        # slugify() drops non-Latin letters, so a Greek name ("Μαύρο φούτερ")
+        # gave an empty slug and a product page that couldn't be opened.
+        base = slugify(name) or 'product'
         slug = base
         n = 1
         qs = Product.objects.filter(slug=slug)
