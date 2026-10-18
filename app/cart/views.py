@@ -3,10 +3,11 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from orders.lines import BadItems, resolve_items
 from orders.stock import stock_row
 from products.models import Product, ProductVariant
 from .models import Cart, CartItem
-from .serializers import CartSerializer
+from .serializers import CartSerializer, quote_data
 
 MAX_QTY_PER_ITEM = 99
 
@@ -136,3 +137,17 @@ class CartItemView(APIView):
         item.qty = qty
         item.save()
         return Response(CartSerializer(cart, context={'request': request}).data)
+
+
+class CartQuoteView(APIView):
+    """Prices a guest's browser-side cart: current prices, stock and the
+    shipping charge, with a `problem` on each line that can't be bought."""
+    authentication_classes = ()
+    permission_classes = (permissions.AllowAny,)
+
+    def post(self, request):
+        try:
+            lines, dropped = resolve_items(request.data.get('items') if isinstance(request.data, dict) else None)
+        except BadItems as exc:
+            return _bad_request(str(exc))
+        return Response(quote_data(lines, dropped, {'request': request}))

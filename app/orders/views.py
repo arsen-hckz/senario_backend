@@ -1,11 +1,16 @@
+import hmac
+
+from django.http import Http404
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 
+from users.throttles import _PerIPRateThrottle
 from .models import Order
-from .serializers import OrderSerializer, CreateOrderSerializer, OrderStatusSerializer
+from .serializers import GuestOrderSerializer, OrderSerializer, CreateOrderSerializer, OrderStatusSerializer
+from .shipping import shipping_rule
 from .status import apply_status_change
 
 
@@ -41,6 +46,53 @@ class CreateOrderView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         order = serializer.save(user=request.user)
         return Response(OrderSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+
+def guest_order_or_404(request, pk, queryset=None):
+    """The guest order `pk`, if the request carries its secret in the
+    X-Order-Token header. Account orders are never reachable this way."""
+    token = request.headers.get('X-Order-Token', '')
+    qs = Order.objects.all() if queryset is None else queryset
+    order = qs.filter(pk=pk).exclude(access_token='').first()
+    if order is None or not token or not hmac.compare_digest(order.access_token, token):
+        raise Http404
+    return order
+
+
+class GuestOrderRateThrottle(_PerIPRateThrottle):
+    scope = 'guest-order'
+
+
+class GuestOrderCreateView(generics.CreateAPIView):
+    authentication_classes = ()
+    permission_classes = (permissions.AllowAny,)
+    serializer_class = GuestOrderSerializer
+    throttle_classes = [GuestOrderRateThrottle]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order = serializer.save()
+        data = OrderSerializer(order, context={'request': request}).data
+        # Shown once: the browser keeps it to pay and to check the order.
+        data['access_token'] = order.access_token
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class GuestOrderDetailView(generics.RetrieveAPIView):
+    authentication_classes = ()
+    permission_classes = (permissions.AllowAny,)
+    serializer_class = OrderSerializer
+
+    def get_object(self):
+        return guest_order_or_404(self.request, self.kwargs['pk'], Order.objects.prefetch_related('items__product__images'))
+
+
+class ShippingRuleView(generics.GenericAPIView):
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request):
+        return Response(shipping_rule())
 
 
 class AdminOrderListView(generics.ListAPIView):

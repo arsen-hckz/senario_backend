@@ -8,6 +8,14 @@ from .receipt import build_receipt_pdf, euro, vat_breakdown
 logger = logging.getLogger(__name__)
 
 
+def order_url(order):
+    """Where the email's button goes. Guests have no account: their link
+    carries the order's secret, after "#" so it never reaches a server log."""
+    if order.is_guest:
+        return frontend_url(f'order?id={order.pk}#t={order.access_token}')
+    return frontend_url('account-orders')
+
+
 def send_order_confirmation(order, transaction_id=''):
     """Email the customer that their order is paid, with the PDF receipt.
 
@@ -34,10 +42,11 @@ def send_order_confirmation(order, transaction_id=''):
                     {'name': i.product_name, 'size': i.size, 'qty': i.qty, 'subtotal': euro(i.subtotal)}
                     for i in items
                 ],
+                'shipping': euro(order.shipping) if order.shipping else 'Free',
                 'total': euro(order.total),
                 'vat': euro(vat),
                 'vat_rate': settings.VAT_RATE_PERCENT,
-                'action_url': frontend_url('account-orders'),
+                'action_url': order_url(order),
             },
             template_dir='orders/email',
             attachments=[(

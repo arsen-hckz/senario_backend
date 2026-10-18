@@ -18,7 +18,7 @@ class OrderAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'full_name', 'phone', 'status', 'total', 'created_at')
     list_filter = ('status',)
     search_fields = ('full_name', 'email', 'phone', 'user__email')
-    readonly_fields = ('user', 'total', 'created_at')
+    readonly_fields = ('user', 'shipping', 'total', 'created_at')
     list_editable = ('status',)
     inlines = (OrderItemInline,)
     actions = ('resend_confirmation',)

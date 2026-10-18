@@ -99,6 +99,7 @@ def build_receipt_pdf(order, transaction_id=''):
     net, vat = vat_breakdown(order.total)
     rate = Decimal(settings.VAT_RATE_PERCENT).normalize()
     totals = [
+        ('Shipping', euro(order.shipping) if order.shipping else 'Free'),
         ('Net amount', euro(net)),
         (f'VAT {rate}%', euro(vat)),
         ('Total paid', euro(order.total)),

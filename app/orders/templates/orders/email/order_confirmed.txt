@@ -3,7 +3,8 @@
 Thank you for your order - your payment went through and order #{{ order.pk }} is confirmed. We'll let you know when it ships.
 
 {% for item in items %}{{ item.qty }} x {{ item.name }}{% if item.size %} ({{ item.size }}){% endif %}  {{ item.subtotal }}
-{% endfor %}
+{% endfor %}Shipping  {{ shipping }}
+
 Total paid: {{ total }} (incl. VAT {{ vat_rate }}%: {{ vat }})
 
 Shipping to:

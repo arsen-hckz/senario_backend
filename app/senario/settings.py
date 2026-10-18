@@ -129,6 +129,8 @@ REST_FRAMEWORK = {
         'password-change': '5/min',
         'checkout': '20/hour',
         'order-create': '20/hour',
+        'guest-order': '20/hour',
+        'guest-checkout': '20/hour',
     },
 }
 
@@ -167,6 +169,10 @@ SIMPLE_JWT = {
 }
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost').split(',')
+# Guest orders are opened with their secret in this header (never the URL,
+# which ends up in access logs).
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = (*default_headers, 'x-order-token')
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -207,6 +213,11 @@ SUPPORT_EMAIL = config('SUPPORT_EMAIL', default='Senarioproject@gmail.com')
 # prices already include.
 BUSINESS_DETAILS = config('BUSINESS_DETAILS', default=BRAND_NAME)
 VAT_RATE_PERCENT = config('VAT_RATE_PERCENT', default='24')
+
+# Delivery charge added to every order, waived once the items reach
+# FREE_SHIPPING_OVER (leave that empty to always charge the fee).
+SHIPPING_FEE = config('SHIPPING_FEE', default='3.50')
+FREE_SHIPPING_OVER = config('FREE_SHIPPING_OVER', default='50')
 
 ANYMAIL = {
     'RESEND_API_KEY': config('RESEND_API_KEY', default=''),

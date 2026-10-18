@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -70,9 +71,17 @@ class CreateOrderTests(APITestCase):
         res = self.create()
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         order = Order.objects.get()
-        self.assertEqual(order.total, Decimal('30.00'))
+        # 2 x 15.00 sale price, plus the delivery fee below FREE_SHIPPING_OVER.
+        self.assertEqual((order.shipping, order.total), (Decimal('3.50'), Decimal('33.50')))
+        self.assertEqual(res.data['subtotal'], '30.00')
         self.assertEqual(order.items.get().price, Decimal('15.00'))
         self.assertFalse(self.cart.items.exists())
+
+    @override_settings(SHIPPING_FEE='4.00', FREE_SHIPPING_OVER='30')
+    def test_shipping_is_free_from_the_threshold(self):
+        self.create()
+        order = Order.objects.get()
+        self.assertEqual((order.shipping, order.total), (Decimal('0.00'), Decimal('30.00')))
 
     def test_rejects_when_stock_ran_out(self):
         self.product.stock = 1

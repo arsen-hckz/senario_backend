@@ -1,5 +1,6 @@
 from django.db import transaction
 from rest_framework import serializers
+from .lines import BadItems, Line, create_order, resolve_items
 from .models import Order, OrderItem
 from .stock import unavailable_items
 from cart.models import Cart
@@ -26,18 +27,20 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
+    subtotal = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    is_guest = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Order
         fields = (
-            'id', 'status', 'total',
+            'id', 'status', 'subtotal', 'shipping', 'total', 'is_guest',
             'full_name', 'email', 'phone', 'address', 'city', 'country', 'postal_code',
             'items', 'created_at',
         )
-        read_only_fields = ('id', 'status', 'total', 'items', 'created_at')
+        read_only_fields = ('id', 'status', 'shipping', 'total', 'items', 'created_at')
 
 
-class CreateOrderSerializer(serializers.Serializer):
+class _OrderDetailsSerializer(serializers.Serializer):
     full_name   = serializers.CharField(max_length=120)
     # Defaults to the account's email; the courier needs the phone.
     email       = serializers.EmailField(required=False, allow_blank=True)
@@ -48,6 +51,17 @@ class CreateOrderSerializer(serializers.Serializer):
     city        = serializers.CharField(max_length=100)
     country     = serializers.CharField(max_length=100)
     postal_code = serializers.CharField(max_length=20)
+
+    DETAIL_FIELDS = ('full_name', 'email', 'phone', 'address', 'city', 'country', 'postal_code')
+
+    def details(self, validated_data):
+        data = {field: validated_data.get(field, '') for field in self.DETAIL_FIELDS}
+        data['phone'] = data['phone'].strip()
+        return data
+
+
+class CreateOrderSerializer(_OrderDetailsSerializer):
+    """A signed-in customer's order, from their server-side cart."""
 
     def validate(self, attrs):
         user = self.context['request'].user
@@ -73,31 +87,43 @@ class CreateOrderSerializer(serializers.Serializer):
                 'Some items are no longer available: ' + ', '.join(unavailable)
             )
         self._cart = cart
-        self._items = items
+        self._lines = [Line(item.product, item.variant, item.qty) for item in items]
         attrs['email'] = attrs.get('email') or user.email
-        attrs['phone'] = attrs['phone'].strip()
         return attrs
 
     def create(self, validated_data):
         # All-or-nothing: an error halfway must not leave a partial order
         # behind, or empty the cart without an order to show for it.
         with transaction.atomic():
-            total = sum(item.product.effective_price * item.qty for item in self._items)
-            order = Order.objects.create(total=total, **validated_data)
-            OrderItem.objects.bulk_create([
-                OrderItem(
-                    order=order,
-                    product=item.product,
-                    variant=item.variant,
-                    product_name=item.product.name,
-                    size=item.variant.size if item.variant else '',
-                    price=item.product.effective_price,
-                    qty=item.qty,
-                )
-                for item in self._items
-            ])
+            order = create_order(self._lines, self.details(validated_data), user=validated_data['user'])
             self._cart.items.all().delete()
         return order
+
+
+class GuestOrderSerializer(_OrderDetailsSerializer):
+    """An order without an account: the items come from the browser's cart."""
+    # No account to fall back on: the receipt and order link go here.
+    email = serializers.EmailField()
+    items = serializers.JSONField()
+
+    def validate_items(self, value):
+        try:
+            lines, dropped = resolve_items(value)
+        except BadItems as exc:
+            raise serializers.ValidationError(str(exc))
+        if not lines and not dropped:
+            raise serializers.ValidationError('Your cart is empty.')
+        problems = [f'{line.product.name}: {line.problem}' for line in lines if line.problem]
+        if dropped or problems:
+            raise serializers.ValidationError(
+                'Some items are no longer available'
+                + (': ' + '; '.join(problems) if problems else '')
+                + '. Please review your cart.'
+            )
+        return lines
+
+    def create(self, validated_data):
+        return create_order(validated_data['items'], self.details(validated_data))
 
 
 class OrderStatusSerializer(serializers.ModelSerializer):

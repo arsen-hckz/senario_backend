@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 
 from orders.emails import send_order_confirmation
 from orders.models import Order
+from orders.views import guest_order_or_404
+from users.throttles import _PerIPRateThrottle
 from orders.stock import decrement_order_stock, order_unavailable_items
 
 from . import viva_client
@@ -47,56 +49,74 @@ def _is_guid(value):
     return True
 
 
+def start_checkout(order, customer_email):
+    """A Viva checkout URL for `order`, or an error Response."""
+    if order.payments.filter(status=Payment.Status.PAID).exists():
+        return Response(
+            {'detail': 'This order has already been paid.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if order.status != Order.Status.PENDING:
+        return Response(
+            {'detail': 'This order can no longer be paid.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    unavailable = order_unavailable_items(order)
+    if unavailable:
+        return Response(
+            {'detail': 'Some items are no longer available: ' + ', '.join(unavailable)},
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    recent = order.payments.filter(
+        status=Payment.Status.PENDING, created_at__gte=timezone.now() - REUSE_CHECKOUT_FOR,
+    ).first()
+    if recent is not None:
+        return Response({'checkout_url': viva_client.checkout_url(recent.viva_order_code)})
+
+    try:
+        order_code = viva_client.create_order(
+            amount_cents=viva_client.to_cents(order.total),
+            customer_trns=f'Order #{order.id} — {settings.BRAND_NAME}',
+            merchant_trns=str(order.id),
+            customer_email=customer_email,
+            customer_full_name=order.full_name,
+        )
+    except VivaError:
+        logger.exception('Failed to create Viva checkout order for Order #%s', order.id)
+        return Response(
+            {'detail': 'Could not start checkout. Please try again.'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    Payment.objects.create(order=order, viva_order_code=order_code, amount=order.total)
+
+    return Response({'checkout_url': viva_client.checkout_url(order_code)})
+
+
 class CreateCheckoutView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
     throttle_classes = [CheckoutRateThrottle]
 
     def post(self, request, order_id):
         order = get_object_or_404(Order, pk=order_id, user=request.user)
+        return start_checkout(order, request.user.email)
 
-        if order.payments.filter(status=Payment.Status.PAID).exists():
-            return Response(
-                {'detail': 'This order has already been paid.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
-        if order.status != Order.Status.PENDING:
-            return Response(
-                {'detail': 'This order can no longer be paid.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+class GuestCheckoutRateThrottle(_PerIPRateThrottle):
+    scope = 'guest-checkout'
 
-        unavailable = order_unavailable_items(order)
-        if unavailable:
-            return Response(
-                {'detail': 'Some items are no longer available: ' + ', '.join(unavailable)},
-                status=status.HTTP_409_CONFLICT,
-            )
 
-        recent = order.payments.filter(
-            status=Payment.Status.PENDING, created_at__gte=timezone.now() - REUSE_CHECKOUT_FOR,
-        ).first()
-        if recent is not None:
-            return Response({'checkout_url': viva_client.checkout_url(recent.viva_order_code)})
+class GuestCheckoutView(APIView):
+    authentication_classes = ()
+    permission_classes = (permissions.AllowAny,)
+    throttle_classes = [GuestCheckoutRateThrottle]
 
-        try:
-            order_code = viva_client.create_order(
-                amount_cents=viva_client.to_cents(order.total),
-                customer_trns=f'Order #{order.id} — {settings.BRAND_NAME}',
-                merchant_trns=str(order.id),
-                customer_email=request.user.email,
-                customer_full_name=order.full_name,
-            )
-        except VivaError:
-            logger.exception('Failed to create Viva checkout order for Order #%s', order.id)
-            return Response(
-                {'detail': 'Could not start checkout. Please try again.'},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        Payment.objects.create(order=order, viva_order_code=order_code, amount=order.total)
-
-        return Response({'checkout_url': viva_client.checkout_url(order_code)})
+    def post(self, request, order_id):
+        order = guest_order_or_404(request, order_id)
+        return start_checkout(order, order.email)
 
 
 class VivaWebhookView(APIView):

@@ -11,9 +11,13 @@ class Order(models.Model):
         DELIVERED  = 'delivered',  'Delivered'
         CANCELLED  = 'cancelled',  'Cancelled'
 
-    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='orders')
+    # Null for guest orders, which are opened with `access_token` instead.
+    user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
+    access_token = models.CharField(max_length=64, blank=True, editable=False)
     status     = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    # What the customer pays: the items plus `shipping`.
     total      = models.DecimalField(max_digits=10, decimal_places=2)
+    shipping   = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     # contact + shipping address snapshot (email/phone are blank on orders
     # placed before checkout started sending them)
     full_name  = models.CharField(max_length=120)
@@ -28,6 +32,14 @@ class Order(models.Model):
 
     def __str__(self):
         return f'Order #{self.pk} — {self.status}'
+
+    @property
+    def is_guest(self):
+        return bool(self.access_token)
+
+    @property
+    def subtotal(self):
+        return self.total - self.shipping
 
 
 class OrderItem(models.Model):
