@@ -13,4 +13,5 @@ urlpatterns = [
     path('api/moodboard/', include('moodboard.urls')),
     path('api/payments/', include('payments.urls')),
     path('api/posts/', include('posts.urls')),
+    path('api/content/', include('content.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

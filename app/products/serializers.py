@@ -72,9 +72,9 @@ class ProductSerializer(serializers.ModelSerializer):
             'image', 'images', 'uploaded_images', 'remove_image_ids', 'image_order', 'sizes',
             'stock', 'is_active',
             'category', 'category_id', 'variants',
-            'created_at',
+            'position', 'created_at',
         )
-        read_only_fields = ('created_at',)
+        read_only_fields = ('position', 'created_at')
         extra_kwargs = {'slug': {'required': False}}
 
     def get_image(self, obj):

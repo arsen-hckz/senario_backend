@@ -1,8 +1,11 @@
 import hashlib
 from django.core.cache import cache
+from django.db import transaction
+from django.db.models import Max
 from django.shortcuts import get_object_or_404
-from rest_framework import generics, permissions, viewsets
+from rest_framework import generics, permissions, status, viewsets
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import Category, Product
 from .serializers import CategorySerializer, ProductSerializer
@@ -63,3 +66,37 @@ class ProductAdminViewSet(viewsets.ModelViewSet):
     lookup_field = 'pk'
     pagination_class = None
     # The public list cache is cleared by products.signals on every save/delete.
+
+    def perform_create(self, serializer):
+        # New products go to the end of the shop's list.
+        max_position = Product.objects.aggregate(m=Max('position'))['m']
+        serializer.save(position=0 if max_position is None else max_position + 1)
+
+
+class ProductReorderView(APIView):
+    """Sets the shop's product order. Takes {"order": [id, ...]}; products
+    missing from the list keep their relative order after the listed ones."""
+    permission_classes = (permissions.IsAdminUser,)
+
+    def post(self, request):
+        order = request.data.get('order')
+        if not isinstance(order, list) or len(order) > 1000:
+            return Response({'detail': 'order must be a list of product ids.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            products = list(Product.objects.select_for_update().order_by('position', 'id'))
+            by_id = {str(p.id): p for p in products}
+            ordered = []
+            for product_id in order:
+                product = by_id.pop(str(product_id), None) if isinstance(product_id, (int, str)) else None
+                if product is not None:
+                    ordered.append(product)
+            ordered += [p for p in products if str(p.id) in by_id]
+            for index, product in enumerate(ordered):
+                product.position = index
+            Product.objects.bulk_update(ordered, ['position'])
+            # bulk_update sends no post_save, so clear the public list cache here.
+            transaction.on_commit(lambda: cache.delete_pattern('products:*'))
+
+        qs = Product.objects.all().select_related('category').prefetch_related('variants', 'images')
+        return Response(ProductSerializer(qs, many=True, context={'request': request}).data)

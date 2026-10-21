@@ -26,7 +26,12 @@ class Product(models.Model):
     sale_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
     stock      = models.PositiveIntegerField(default=0)
     is_active  = models.BooleanField(default=True)
+    # Place in the shop's product list; staff set it by dragging in the admin dashboard.
+    position   = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['position', 'id']
 
     def __str__(self):
         return self.name

@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'moodboard',
     'payments',
     'posts',
+    'content',
 ]
 
 MIDDLEWARE = [
