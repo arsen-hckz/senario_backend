@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 
 from orders.emails import send_order_confirmation
 from orders.models import Order
+from orders.status import apply_status_change
 from orders.views import guest_order_or_404
 from users.throttles import _PerIPRateThrottle
 from orders.stock import decrement_order_stock, order_unavailable_items
@@ -24,8 +25,16 @@ from .viva_client import VivaError, VivaTransactionNotFound
 
 logger = logging.getLogger(__name__)
 
-# Viva webhook EventTypeId for "Transaction Payment Created".
+# Viva webhook EventTypeIds: "Transaction Payment Created" and
+# "Transaction Reversal Created" (a refund or void went through).
 TRANSACTION_PAYMENT_CREATED = 1796
+TRANSACTION_REVERSAL_CREATED = 1797
+
+# Viva TransactionTypeIds that give money back: card refund, card void,
+# wallet refund, card refund (installments). A reversal webhook only counts
+# if Viva says the transaction it names is one of these, so a charge's own
+# id posted as a "reversal" can't cancel a paid order.
+REFUND_TRANSACTION_TYPES = {4, 7, 11, 18}
 
 # A checkout started this recently is handed out again instead of creating
 # another Viva order: a double click or a quick retry shouldn't leave a trail
@@ -131,11 +140,12 @@ class VivaWebhookView(APIView):
         return Response({'Key': settings.VIVA_WEBHOOK_VERIFICATION_KEY})
 
     def post(self, request):
-        if not isinstance(request.data, dict) or request.data.get('EventTypeId') != TRANSACTION_PAYMENT_CREATED:
-            # Only successful-payment events confirm orders. A reversal (refund)
-            # event carries the same OrderCode, and must never count as payment.
+        event_type = request.data.get('EventTypeId') if isinstance(request.data, dict) else None
+        if event_type not in (TRANSACTION_PAYMENT_CREATED, TRANSACTION_REVERSAL_CREATED):
             return Response(status=status.HTTP_200_OK)
         event_data = request.data.get('EventData') or {}
+        if not isinstance(event_data, dict):
+            return Response(status=status.HTTP_200_OK)
         order_code = str(event_data.get('OrderCode') or '')
         transaction_id = str(event_data.get('TransactionId') or '')
         if not order_code or not _is_guid(transaction_id):
@@ -143,33 +153,20 @@ class VivaWebhookView(APIView):
             return Response(status=status.HTTP_200_OK)
 
         payment = Payment.objects.filter(viva_order_code=order_code).first()
-        if payment is None or payment.status != Payment.Status.PENDING:
+        if event_type == TRANSACTION_PAYMENT_CREATED:
+            wanted = (Payment.Status.PENDING,)
+        else:
+            # A refund only matters for money we took (refund_needed: staff
+            # cancelled the order first and the alert asked them to refund).
+            wanted = (Payment.Status.PAID, Payment.Status.REFUND_NEEDED)
+        if payment is None or payment.status not in wanted or transaction_id == payment.viva_transaction_id:
             return Response(status=status.HTTP_200_OK)
 
-        # Each delivery makes us call Viva; cap it per order code so a replayed
-        # code can't hammer Viva's API. 429 is non-2xx, so Viva retries later.
-        verify_key = f'viva-webhook-verify:{order_code}'
-        cache.add(verify_key, 0, timeout=600)
-        if cache.incr(verify_key) > WEBHOOK_VERIFY_LIMIT:
-            logger.warning('Webhook verification limit hit for Viva order %s', order_code)
-            return Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
-
-        # Never trust the webhook body for the actual payment facts — Viva
-        # doesn't sign these POSTs, so re-fetch the transaction ourselves
-        # with our own OAuth credentials before believing anything.
-        try:
-            txn = viva_client.get_transaction(transaction_id)
-        except VivaTransactionNotFound:
-            # This endpoint is public and unthrottled, so anyone can post made-up
-            # ids. Warning + 4xx only: an error log or a 5xx response would email
-            # staff on every one. Still non-2xx, so Viva retries a real payment
-            # it hadn't finished recording yet.
-            logger.warning('Webhook for unknown Viva transaction %s', transaction_id)
-            return Response(status=status.HTTP_404_NOT_FOUND)
-        except VivaError:
-            logger.exception('Failed to verify Viva transaction %s', transaction_id)
-            # Non-2xx so Viva retries delivery later and we get another chance to verify.
-            return Response(status=status.HTTP_502_BAD_GATEWAY)
+        txn, error = self._fetch_transaction(order_code, transaction_id)
+        if error is not None:
+            return error
+        if event_type == TRANSACTION_REVERSAL_CREATED:
+            return self._record_refund(payment, transaction_id, txn)
 
         verified = (
             txn.get('statusId') == 'F'
@@ -212,5 +209,76 @@ class VivaWebhookView(APIView):
 
             # After commit: only email once the payment is really recorded.
             db_transaction.on_commit(lambda: send_order_confirmation(order, locked_payment.viva_transaction_id))
+
+        return Response(status=status.HTTP_200_OK)
+
+    def _fetch_transaction(self, order_code, transaction_id):
+        """(transaction, None), or (None, the Response to send)."""
+        # Each delivery makes us call Viva; cap it per order code so a replayed
+        # code can't hammer Viva's API. 429 is non-2xx, so Viva retries later.
+        verify_key = f'viva-webhook-verify:{order_code}'
+        cache.add(verify_key, 0, timeout=600)
+        if cache.incr(verify_key) > WEBHOOK_VERIFY_LIMIT:
+            logger.warning('Webhook verification limit hit for Viva order %s', order_code)
+            return None, Response(status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # Never trust the webhook body for the actual payment facts — Viva
+        # doesn't sign these POSTs, so re-fetch the transaction ourselves
+        # with our own OAuth credentials before believing anything.
+        try:
+            return viva_client.get_transaction(transaction_id), None
+        except VivaTransactionNotFound:
+            # This endpoint is public and unthrottled, so anyone can post made-up
+            # ids. Warning + 4xx only: an error log or a 5xx response would email
+            # staff on every one. Still non-2xx, so Viva retries a real payment
+            # it hadn't finished recording yet.
+            logger.warning('Webhook for unknown Viva transaction %s', transaction_id)
+            return None, Response(status=status.HTTP_404_NOT_FOUND)
+        except VivaError:
+            logger.exception('Failed to verify Viva transaction %s', transaction_id)
+            # Non-2xx so Viva retries delivery later and we get another chance to verify.
+            return None, Response(status=status.HTTP_502_BAD_GATEWAY)
+
+    def _record_refund(self, payment, transaction_id, txn):
+        """A verified full refund marks the payment refunded and cancels a
+        confirmed order (giving its stock back). Anything else is left for staff."""
+        try:
+            type_id = int(txn.get('transactionTypeId'))
+        except (TypeError, ValueError):
+            type_id = None
+        if (
+            txn.get('statusId') != 'F'
+            or str(txn.get('orderCode') or '') != payment.viva_order_code
+            or type_id not in REFUND_TRANSACTION_TYPES
+            or txn.get('amount') is None
+        ):
+            logger.warning('Ignored Viva reversal %s for order code %s: not a completed refund of it',
+                           transaction_id, payment.viva_order_code)
+            return Response(status=status.HTTP_200_OK)
+
+        if abs(viva_client.to_cents(txn['amount'])) != viva_client.to_cents(payment.amount):
+            # Partial refund: the order may still be (partly) going out — staff decide.
+            logger.warning('Partial Viva refund %s on Order #%s (%s of %s): order left as is',
+                           transaction_id, payment.order_id, txn['amount'], payment.amount)
+            return Response(status=status.HTTP_200_OK)
+
+        with db_transaction.atomic():
+            locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
+            if locked_payment.status not in (Payment.Status.PAID, Payment.Status.REFUND_NEEDED):
+                return Response(status=status.HTTP_200_OK)
+            order = Order.objects.select_for_update().get(pk=locked_payment.order_id)
+            locked_payment.status = Payment.Status.REFUNDED
+            locked_payment.save(update_fields=['status', 'updated_at'])
+
+            if order.status in (Order.Status.PENDING, Order.Status.CONFIRMED):
+                old_status = order.status
+                order.status = Order.Status.CANCELLED
+                order.save(update_fields=['status', 'updated_at'])
+                apply_status_change(order, old_status)  # gives the stock back
+                logger.warning('Order #%s cancelled: refunded in full in Viva', order.pk)
+            elif order.status != Order.Status.CANCELLED:
+                # Shipped or delivered: whether the stock comes back depends on the return.
+                logger.warning('Order #%s (%s) was refunded in full in Viva: update it by hand',
+                               order.pk, order.status)
 
         return Response(status=status.HTTP_200_OK)

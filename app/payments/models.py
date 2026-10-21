@@ -16,6 +16,8 @@ class Payment(models.Model):
         FAILED    = 'failed',    'Failed'
         # Charged, but the order was already paid or cancelled — refund it in Viva's portal.
         REFUND_NEEDED = 'refund_needed', 'Paid — refund needed'
+        # Refunded in full through Viva (the refund webhook sets it).
+        REFUNDED  = 'refunded',  'Refunded'
 
     order               = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='payments')
     viva_order_code     = models.CharField(max_length=32, unique=True)
