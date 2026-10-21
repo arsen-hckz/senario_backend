@@ -111,6 +111,11 @@ REST_FRAMEWORK = {
     # Without this, DRF keys rate limits on the whole client-supplied header,
     # so changing it per request bypasses the login brute-force limit.
     'NUM_PROXIES': 1,
+    'DEFAULT_PARSER_CLASSES': (
+        'senario.parsers.ObjectJSONParser',
+        'rest_framework.parsers.FormParser',
+        'rest_framework.parsers.MultiPartParser',
+    ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_THROTTLE_CLASSES': [

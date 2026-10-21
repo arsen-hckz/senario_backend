@@ -138,7 +138,9 @@ class RefundWebhookTests(APITestCase):
     def test_junk_reversal_bodies_are_acked_without_calls(self, get_txn):
         for body in ({'EventTypeId': 1797}, {'EventTypeId': 1797, 'EventData': ['x']},
                      {'EventTypeId': 1797, 'EventData': 'x'}, reversal(transaction_id='../x'),
-                     reversal(order_code='nope'), ['x']):
+                     reversal(order_code='nope')):
             res = self.client.post(URL, body, format='json')
             self.assertEqual(res.status_code, status.HTTP_200_OK, body)
+        # Not a JSON object at all: refused by the parser (Viva only sends objects).
+        self.assertEqual(self.client.post(URL, ['x'], format='json').status_code, status.HTTP_400_BAD_REQUEST)
         get_txn.assert_not_called()
