@@ -48,3 +48,15 @@ CONCEPT = [
 ]
 
 PAGES = {'concept': CONCEPT}
+
+
+# The replaceable photos of each storefront page: key, admin label. Until
+# staff upload one, the page keeps the photo built into its HTML.
+CONCEPT_IMAGES = [
+    ('process_photo_1', 'Process — photo 1'),
+    ('process_photo_2', 'Process — photo 2'),
+    ('process_photo_3', 'Process — photo 3'),
+    ('process_photo_4', 'Process — photo 4'),
+]
+
+PAGE_IMAGES = {'concept': CONCEPT_IMAGES}

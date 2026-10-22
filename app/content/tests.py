@@ -1,8 +1,15 @@
+import io
+import shutil
+import tempfile
+
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import PageText
+from .models import PageImage, PageText
 from .pages import CONCEPT
 
 User = get_user_model()
@@ -64,3 +71,82 @@ class PageTextTests(APITestCase):
         res = self.client.patch('/api/content/admin/concept/', {'quote': 'x'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(self.client.get('/api/content/admin/concept/').status_code, status.HTTP_403_FORBIDDEN)
+
+
+def jpeg(size=(3000, 2000)):
+    buf = io.BytesIO()
+    Image.new('RGB', size, (200, 80, 40)).save(buf, format='JPEG')
+    return SimpleUploadedFile('photo.jpg', buf.getvalue(), content_type='image/jpeg')
+
+
+class PageImageTests(APITestCase):
+    URL = '/api/content/admin/concept/images/'
+
+    def setUp(self):
+        self.media = tempfile.mkdtemp()
+        self.override = override_settings(MEDIA_ROOT=self.media)
+        self.override.enable()
+        self.staff = User.objects.create_user(email='staff@example.com', password='x', is_staff=True)
+        self.customer = User.objects.create_user(email='c@example.com', password='x')
+
+    def tearDown(self):
+        self.override.disable()
+        shutil.rmtree(self.media, ignore_errors=True)
+
+    def upload(self, key='process_photo_1', file=None):
+        return self.client.post(f'{self.URL}{key}/', {'image': file or jpeg()}, format='multipart')
+
+    def test_public_list_is_null_until_a_photo_is_uploaded(self):
+        res = self.client.get('/api/content/concept/images/')
+        self.assertEqual(res.data, {f'process_photo_{n}': None for n in range(1, 5)})
+
+    def test_upload_replace_and_reset(self):
+        self.client.force_authenticate(self.staff)
+        res = self.upload()
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        first = PageImage.objects.get()
+        self.assertLessEqual(max(Image.open(first.image.path).size), 2000)  # downsized on save
+        self.assertTrue(res.data[0]['url'].endswith(first.image.url))
+
+        self.client.force_authenticate(None)
+        public = self.client.get('/api/content/concept/images/').data
+        self.assertTrue(public['process_photo_1'].startswith('http://testserver/media/content/'))
+        self.assertIsNone(public['process_photo_2'])
+
+        self.client.force_authenticate(self.staff)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.upload()
+        second = PageImage.objects.get()
+        self.assertNotEqual(first.image.name, second.image.name)
+        self.assertFalse(first.image.storage.exists(first.image.name))  # old file removed
+
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.client.delete(f'{self.URL}process_photo_1/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(PageImage.objects.exists())
+        self.assertFalse(second.image.storage.exists(second.image.name))
+
+    def test_bad_uploads_are_a_400(self):
+        self.client.force_authenticate(self.staff)
+        not_image = SimpleUploadedFile('x.jpg', b'not an image', content_type='image/jpeg')
+        self.assertEqual(self.upload(file=not_image).status_code, status.HTTP_400_BAD_REQUEST)
+        res = self.client.post(f'{self.URL}process_photo_1/', {}, format='multipart')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        res = self.client.post(f'{self.URL}process_photo_1/', {'image': 'x'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+        self.assertFalse(PageImage.objects.exists())
+
+    def test_unknown_page_or_slot_is_404(self):
+        self.client.force_authenticate(self.staff)
+        self.assertEqual(self.upload(key='nope').status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.client.get('/api/content/nope/images/').status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.client.post('/api/content/admin/nope/images/process_photo_1/',
+                                          {'image': jpeg()}, format='multipart').status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_changing_photos_is_staff_only(self):
+        self.assertEqual(self.upload().status_code, status.HTTP_401_UNAUTHORIZED)
+        self.client.force_authenticate(self.customer)
+        self.assertEqual(self.upload().status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.delete(f'{self.URL}process_photo_1/').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get(self.URL).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(PageImage.objects.exists())
