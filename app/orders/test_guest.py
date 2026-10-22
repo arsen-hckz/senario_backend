@@ -41,6 +41,12 @@ class GuestCartQuoteTests(APITestCase):
         res = self.quote([{'product_id': self.hoodie.id, 'variant_id': self.m.id, 'qty': 1}])
         self.assertEqual((res.data['shipping'], res.data['grand_total']), ('0.00', '50.00'))
 
+    @override_settings(FREE_SHIPPING_OVER='')
+    def test_shipping_is_always_charged_without_a_threshold(self):
+        res = self.quote([{'product_id': self.hoodie.id, 'variant_id': self.m.id, 'qty': 1}])
+        self.assertEqual((res.data['shipping'], res.data['grand_total']), ('3.50', '53.50'))
+        self.assertIsNone(self.client.get('/api/orders/shipping/').data['free_over'])
+
     def test_lines_that_cannot_be_bought_say_why(self):
         res = self.quote([
             {'product_id': self.hoodie.id, 'qty': 1},                         # no size
@@ -99,6 +105,14 @@ class GuestOrderTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('Only 5 left in stock', str(res.data))
         self.assertFalse(Order.objects.exists())
+
+    def test_delivers_only_within_greece(self):
+        res = self.place(country='Cyprus')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('only deliver within Greece', str(res.data))
+        self.assertFalse(Order.objects.exists())
+        self.assertEqual(self.place(country=' gr ').status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Order.objects.get().country, 'Greece')
 
     def test_order_opens_only_with_its_secret(self):
         token = self.place().data['access_token']

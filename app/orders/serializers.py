@@ -54,6 +54,14 @@ class _OrderDetailsSerializer(serializers.Serializer):
 
     DETAIL_FIELDS = ('full_name', 'email', 'phone', 'address', 'city', 'country', 'postal_code')
 
+    # We only deliver in Greece; older pages sent 'GR', the checkout sends 'Greece'.
+    GREECE = {'gr', 'greece', 'ελλάδα', 'ελλαδα', 'ελλάς'}
+
+    def validate_country(self, value):
+        if value.strip().lower() not in self.GREECE:
+            raise serializers.ValidationError('We only deliver within Greece.')
+        return 'Greece'
+
     def details(self, validated_data):
         data = {field: validated_data.get(field, '') for field in self.DETAIL_FIELDS}
         data['phone'] = data['phone'].strip()

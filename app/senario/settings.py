@@ -220,10 +220,10 @@ SUPPORT_EMAIL = config('SUPPORT_EMAIL', default='Senarioproject@gmail.com')
 BUSINESS_DETAILS = config('BUSINESS_DETAILS', default=BRAND_NAME)
 VAT_RATE_PERCENT = config('VAT_RATE_PERCENT', default='24')
 
-# Delivery charge added to every order, waived once the items reach
-# FREE_SHIPPING_OVER (leave that empty to always charge the fee).
+# Delivery charge added to every order. Set FREE_SHIPPING_OVER to waive it
+# once the items reach that amount; empty (the default) always charges it.
 SHIPPING_FEE = config('SHIPPING_FEE', default='3.50')
-FREE_SHIPPING_OVER = config('FREE_SHIPPING_OVER', default='50')
+FREE_SHIPPING_OVER = config('FREE_SHIPPING_OVER', default='')
 
 ANYMAIL = {
     'RESEND_API_KEY': config('RESEND_API_KEY', default=''),
