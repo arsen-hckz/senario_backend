@@ -130,15 +130,32 @@ class SignedInCheckoutTests(APITestCase):
         self.assertEqual(codes[:20], [status.HTTP_201_CREATED] * 20)
         self.assertEqual(codes[20], status.HTTP_429_TOO_MANY_REQUESTS)
 
-    def test_old_unpaid_checkouts_are_deleted_but_their_payments_are_kept(self, viva):
+    def test_unpaid_checkouts_are_deleted_after_24_hours(self, viva):
         self.checkout()
-        old = Checkout.objects.get()
-        Checkout.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=8))
         self.checkout()
+        recent, old = Checkout.objects.order_by('pk')
+        Checkout.objects.filter(pk=recent.pk).update(created_at=timezone.now() - timedelta(hours=23))
+        Checkout.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(hours=25))
+        self.checkout()
+        self.assertTrue(Checkout.objects.filter(pk=recent.pk).exists())
         self.assertFalse(Checkout.objects.filter(pk=old.pk).exists())
-        self.assertEqual(Checkout.objects.count(), 1)
         # Kept so a payment that still arrived for it raises a refund alert.
         self.assertEqual(Payment.objects.filter(checkout=None).count(), 1)
+
+    def test_hourly_command_deletes_old_unpaid_checkouts_only(self, viva):
+        from io import StringIO
+        from django.core.management import call_command
+        self.checkout()
+        self.checkout()
+        unpaid, paid = Checkout.objects.order_by('pk')
+        order = Order.objects.create(user=self.user, total=1, status=Order.Status.CONFIRMED, full_name='A',
+                                     address='B', city='C', country='Greece', postal_code='1')
+        Checkout.objects.filter(pk=paid.pk).update(order=order)
+        Checkout.objects.update(created_at=timezone.now() - timedelta(days=30))
+        out = StringIO()
+        call_command('delete_old_checkouts', stdout=out)
+        self.assertIn('Deleted 1 unpaid checkout(s)', out.getvalue())
+        self.assertEqual(list(Checkout.objects.values_list('pk', flat=True)), [paid.pk])
 
     def test_removed_endpoints_are_gone(self, viva):
         self.assertEqual(self.client.post('/api/orders/create/', ADDRESS, format='json').status_code, 404)

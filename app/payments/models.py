@@ -10,7 +10,7 @@ class Checkout(models.Model):
 
     No Order exists until Viva confirms the payment — the webhook then turns
     the checkout into a confirmed Order. Abandoned checkouts are deleted after
-    a week (see `open_checkout`).
+    24 hours (see `delete_old_checkouts`).
     """
     # Null for guest checkouts, and if the account was deleted meanwhile.
     user        = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,

@@ -13,14 +13,22 @@ from products.models import Product, ProductVariant
 
 from .models import Checkout
 
-# Unpaid checkouts are deleted after this. Far beyond the life of a Viva
-# payment page, and keeps abandoned customers' details from piling up.
-KEEP_UNPAID_FOR = timedelta(days=7)
+# Unpaid checkouts are deleted after this (the privacy policy says so).
+# Well beyond the life of a Viva payment page; a payment that still arrives
+# later is flagged for a refund rather than lost.
+KEEP_UNPAID_FOR = timedelta(hours=24)
+
+
+def delete_old_checkouts():
+    """Delete unpaid checkouts older than KEEP_UNPAID_FOR; returns how many.
+    Runs on every new checkout and hourly from cron (delete_old_checkouts)."""
+    old = Checkout.objects.filter(order__isnull=True, created_at__lt=timezone.now() - KEEP_UNPAID_FOR)
+    return old.delete()[1].get('payments.Checkout', 0)
 
 
 def open_checkout(lines, details, user=None):
     """A Checkout for `lines` (already checked against stock) at today's prices."""
-    Checkout.objects.filter(order__isnull=True, created_at__lt=timezone.now() - KEEP_UNPAID_FOR).delete()
+    delete_old_checkouts()
     subtotal = sum(line.subtotal for line in lines)
     shipping = shipping_for(subtotal)
     return Checkout.objects.create(
