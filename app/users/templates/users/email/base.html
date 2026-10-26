@@ -21,7 +21,7 @@
           <!-- Body -->
           <tr>
             <td style="padding:32px 32px 8px 32px; color:#18181b; font-size:16px; line-height:1.6;">
-              <p style="margin:0 0 16px 0;">Hey{% if first_name %} {{ first_name }}{% endif %},</p>
+              {% block greeting %}<p style="margin:0 0 16px 0;">Hey{% if first_name %} {{ first_name }}{% endif %},</p>{% endblock %}
               {% block intro %}{% endblock %}
             </td>
           </tr>

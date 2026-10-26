@@ -1,0 +1,20 @@
+{% autoescape off %}A new order is paid: #{{ order.pk }}, {{ total }}.
+
+{% for item in items %}{{ item.qty }} x {{ item.name }}{% if item.size %} ({{ item.size }}){% endif %}  {{ item.subtotal }}
+{% endfor %}Shipping  {{ shipping }}
+Total paid: {{ total }}
+
+Customer:
+{{ order.full_name }}{% if not order.user %} (guest){% endif %}
+{{ customer_email }}{% if order.phone %}
+{{ order.phone }}{% endif %}
+
+Ship to:
+{{ order.address }}
+{{ order.postal_code }} {{ order.city }}, {{ order.country }}
+
+Open the dashboard:
+{{ action_url }}
+
+Set the order to "shipped" in the dashboard when it goes out: the customer is emailed then.
+{% endautoescape %}

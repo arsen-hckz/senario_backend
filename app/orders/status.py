@@ -1,7 +1,9 @@
 import logging
 
+from django.db import transaction
 from django.utils import timezone
 
+from .emails import send_order_shipped
 from .models import Order
 from .stock import decrement_order_stock, increment_order_stock
 
@@ -14,10 +16,14 @@ STOCK_TAKEN = {Order.Status.CONFIRMED, Order.Status.SHIPPED, Order.Status.DELIVE
 
 
 def apply_status_change(order, old_status):
-    """Stock and payment side effects of staff changing an order's status.
-    Call inside a transaction, after the new status is saved. Returns True
-    when a Viva payment was flagged for a refund."""
+    """Stock, payment and email side effects of staff changing an order's
+    status. Call inside a transaction, after the new status is saved.
+    Returns True when a Viva payment was flagged for a refund."""
     from payments.models import Payment
+
+    if order.status == Order.Status.SHIPPED and old_status != Order.Status.SHIPPED:
+        # Only once the change is committed: a rolled-back save sends nothing.
+        transaction.on_commit(lambda: send_order_shipped(order))
 
     was_taken = old_status in STOCK_TAKEN
     now_taken = order.status in STOCK_TAKEN

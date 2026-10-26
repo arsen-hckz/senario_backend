@@ -211,6 +211,8 @@ EMAIL_BACKEND = config(
 )
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=f'{BRAND_NAME} <no-reply@senario.app>')
 SUPPORT_EMAIL = config('SUPPORT_EMAIL', default='Senarioproject@gmail.com')
+# Where "New order #N" alerts go when a payment confirms an order.
+ORDER_ALERT_EMAIL = config('ORDER_ALERT_EMAIL', default=SUPPORT_EMAIL)
 
 # Order receipts: the seller block (lines separated by "|", e.g.
 # "Senario|Street 1, 10000 Athens|VAT ID 123456789") and the VAT rate the

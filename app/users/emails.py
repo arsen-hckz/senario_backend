@@ -58,6 +58,7 @@ def send_branded_email(to, subject, template, context, template_dir='users/email
     """`attachments`: (filename, bytes, mimetype) tuples."""
     context = {
         'brand_name': settings.BRAND_NAME,
+        'support_email': settings.SUPPORT_EMAIL,
         'current_year': date.today().year,
         'logo_cid': LOGO_CID,
         **context,

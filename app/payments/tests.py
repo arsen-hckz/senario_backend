@@ -82,9 +82,9 @@ class PaymentsTests(APITestCase):
             self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
             self.assertEqual(len(mail.outbox), 0)  # not before the payment is committed
 
-        self.assertEqual(len(mail.outbox), 1)
-        message = mail.outbox[0]
-        self.assertEqual(message.to, ['buyer@example.com'])  # order has no email: falls back to the account
+        # The customer's confirmation, then the shop's new-order alert.
+        self.assertEqual([m.to for m in mail.outbox], [['buyer@example.com'], ['Senarioproject@gmail.com']])
+        message = mail.outbox[0]  # order has no email: falls back to the account
         self.assertIn(f'order #{self.order.pk} is confirmed', message.subject)
         self.assertIn('2 x Tee (M)', message.body)
         pdfs = [a for a in message.attachments if getattr(a, 'mimetype', None) == 'application/pdf'
@@ -96,7 +96,7 @@ class PaymentsTests(APITestCase):
         # A repeated delivery of the same event doesn't email again.
         with self.captureOnCommitCallbacks(execute=True):
             self.client.post('/api/payments/webhook/viva/', self._webhook_event('999'), format='json')
-        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(len(mail.outbox), 2)
 
     @patch('orders.emails.send_branded_email', side_effect=RuntimeError('mail down'))
     @patch('payments.viva_client.get_transaction')

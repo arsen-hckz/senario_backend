@@ -25,4 +25,4 @@
                 {{ order.full_name }}<br>{{ order.address }}<br>{{ order.postal_code }} {{ order.city }}, {{ order.country }}{% if order.phone %}<br>{{ order.phone }}{% endif %}
               </p>{% endblock %}
 {% block action_label %}View Your Order{% endblock %}
-{% block note %}Your receipt is attached as a PDF. Questions about your order? Just reply to this email.{% endblock %}
+{% block note %}Your receipt is attached as a PDF. Questions about your order? Email us at <a href="mailto:{{ support_email }}" style="color:#3f3f46;">{{ support_email }}</a>.{% endblock %}

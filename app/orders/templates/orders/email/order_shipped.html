@@ -1,0 +1,18 @@
+{% extends "users/email/base.html" %}
+{% block title %}Order #{{ order.pk }} is on its way{% endblock %}
+{% block intro %}<p style="margin:0 0 16px 0;">
+                Good news &mdash; order <strong>#{{ order.pk }}</strong> has shipped and is on its way to you with ACS Courier.
+              </p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px; border-collapse:collapse; margin:0 0 16px 0;">
+                {% for item in items %}
+                <tr>
+                  <td style="padding:8px 0; border-bottom:1px solid #e4e4e7;">{{ item.qty }} &times; {{ item.name }}{% if item.size %} <span style="color:#71717a;">({{ item.size }})</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              <p style="margin:0 0 16px 0; font-size:14px; color:#3f3f46;">
+                <strong>Delivering to</strong><br>
+                {{ order.full_name }}<br>{{ order.address }}<br>{{ order.postal_code }} {{ order.city }}, {{ order.country }}{% if order.phone %}<br>{{ order.phone }}{% endif %}
+              </p>{% endblock %}
+{% block action_label %}View Your Order{% endblock %}
+{% block note %}Questions about your delivery? Email us at <a href="mailto:{{ support_email }}" style="color:#3f3f46;">{{ support_email }}</a>.{% endblock %}

@@ -16,7 +16,7 @@ Shipping to:
 View your order:
 {{ action_url }}
 
-Your receipt is attached as a PDF. Questions about your order? Just reply to this email.
+Your receipt is attached as a PDF. Questions about your order? Email us at {{ support_email }}.
 
 (c) {{ current_year }} {{ brand_name }}. All rights reserved.
 {% endautoescape %}

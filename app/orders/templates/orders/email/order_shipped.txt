@@ -1,0 +1,19 @@
+{% autoescape off %}Hey{% if first_name %} {{ first_name }}{% endif %},
+
+Good news - order #{{ order.pk }} has shipped and is on its way to you with ACS Courier.
+
+{% for item in items %}{{ item.qty }} x {{ item.name }}{% if item.size %} ({{ item.size }}){% endif %}
+{% endfor %}
+Delivering to:
+{{ order.full_name }}
+{{ order.address }}
+{{ order.postal_code }} {{ order.city }}, {{ order.country }}{% if order.phone %}
+{{ order.phone }}{% endif %}
+
+View your order:
+{{ action_url }}
+
+Questions about your delivery? Email us at {{ support_email }}.
+
+(c) {{ current_year }} {{ brand_name }}. All rights reserved.
+{% endautoescape %}

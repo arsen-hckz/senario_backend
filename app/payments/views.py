@@ -11,7 +11,7 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from orders.emails import send_order_confirmation
+from orders.emails import send_new_order_alert, send_order_confirmation
 from orders.models import Order
 from orders.serializers import CheckoutSerializer, GuestCheckoutSerializer
 from orders.status import apply_status_change
@@ -202,6 +202,7 @@ class VivaWebhookView(APIView):
 
             # After commit: only email once the payment is really recorded.
             db_transaction.on_commit(lambda: send_order_confirmation(order, locked_payment.viva_transaction_id))
+            db_transaction.on_commit(lambda: send_new_order_alert(order))
 
         return Response(status=status.HTTP_200_OK)
 

@@ -261,9 +261,21 @@ class PaidCheckoutBecomesAnOrderTests(APITestCase):
         self.assertEqual(Checkout.objects.get().order, order)
         self.assertFalse(self.cart.items.exists())
 
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, ['buyer@example.com'])
-        self.assertIn(f'order #{order.pk} is confirmed', mail.outbox[0].subject)
+        customer, alert = mail.outbox
+        self.assertEqual(customer.to, ['buyer@example.com'])
+        self.assertIn(f'order #{order.pk} is confirmed', customer.subject)
+        self.assertIn('Email us at Senarioproject@gmail.com.', customer.body)
+        self.assertNotIn('reply to this email', customer.body.lower())
+
+        # The shop hears about it, with what it needs to pack and ship.
+        self.assertEqual(alert.to, ['Senarioproject@gmail.com'])
+        self.assertEqual(alert.subject, f'New order #{order.pk} — €103.50')
+        for text in ('2 x Hoodie (M)', 'Buyer Name', 'buyer@example.com', '+30 690 000 0000',
+                     'Addr 1', '11111 Athens, Greece', 'https://shop.example/admin'):
+            self.assertIn(text, alert.body)
+        self.assertNotIn('(guest)', alert.body)
+        html = alert.alternatives[0][0]
+        self.assertNotIn('Hey', html)  # no customer-style greeting for the shop
 
         res = self.status_of(data)
         self.assertEqual(res.data, {'paid': True, 'order_id': order.pk, 'order_status': 'confirmed', 'is_guest': False})
@@ -301,9 +313,12 @@ class PaidCheckoutBecomesAnOrderTests(APITestCase):
         self.assertEqual(self.status_of(data).data['is_guest'], True)
         res = self.client.get(f'/api/orders/guest/{order.pk}/', HTTP_X_ORDER_TOKEN=data['token'])
         self.assertEqual((res.status_code, res.data['status']), (200, 'confirmed'))
-        self.assertEqual(mail.outbox[-1].to, ['guest@example.com'])
-        self.assertIn(f"https://shop.example/order?id={order.pk}#t={data['token']}", mail.outbox[-1].body)
-        self.assertIn('Shipping  €3.50', mail.outbox[-1].body)
+        customer, alert = mail.outbox
+        self.assertEqual(customer.to, ['guest@example.com'])
+        self.assertIn(f"https://shop.example/order?id={order.pk}#t={data['token']}", customer.body)
+        self.assertIn('Shipping  €3.50', customer.body)
+        self.assertIn('Guest Buyer (guest)', alert.body)
+        self.assertNotIn(data['token'], alert.body)  # the guest's secret stays with the guest
 
     def test_account_order_is_not_reachable_with_the_checkout_secret(self, viva, get_txn):
         data = self.signed_in_checkout()
@@ -343,7 +358,7 @@ class PaidCheckoutBecomesAnOrderTests(APITestCase):
         self.pay(CODES[0], 53.5)
         self.pay(CODES[0], 53.5, transaction_id='33333333-3333-4333-8333-333333333333')
         self.assertEqual(Order.objects.count(), 1)
-        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(len(mail.outbox), 2)  # one confirmation + one shop alert, not more
         self.m.refresh_from_db()
         self.assertEqual(self.m.stock, 2)
 
@@ -450,3 +465,69 @@ class PaidCheckoutBecomesAnOrderTests(APITestCase):
         self.assertEqual(Payment.objects.get().status, Payment.Status.REFUND_NEEDED)
         self.m.refresh_from_db()
         self.assertEqual(self.m.stock, 3)
+
+    def test_customer_is_emailed_once_when_the_order_ships(self, viva, get_txn):
+        data = self.guest_checkout()
+        get_txn.return_value = charged(CODES[0], 53.5)
+        self.pay(CODES[0], 53.5)
+        order = Order.objects.get()
+        mail.outbox.clear()
+        staff = User.objects.create_user(email='staff@example.com', password='x', is_staff=True)
+        self.client.force_authenticate(user=staff)
+
+        def set_status(value):
+            with self.captureOnCommitCallbacks(execute=True):
+                res = self.client.patch(f'/api/orders/admin/{order.pk}/', {'status': value}, format='json')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        set_status('confirmed')  # unchanged: nothing sent
+        self.assertEqual(mail.outbox, [])
+        set_status('shipped')
+        self.assertEqual(len(mail.outbox), 1)
+        shipped = mail.outbox[0]
+        self.assertEqual(shipped.to, ['guest@example.com'])
+        self.assertEqual(shipped.subject, f'Your Senario order #{order.pk} is on its way')
+        for text in ('on its way to you with ACS Courier', '1 x Hoodie (M)', 'Addr 1',
+                     f"https://shop.example/order?id={order.pk}#t={data['token']}",
+                     'Email us at Senarioproject@gmail.com.'):
+            self.assertIn(text, shipped.body)
+        self.assertIn('Hey Guest,', shipped.alternatives[0][0])
+
+        set_status('shipped')    # saved again: no second email
+        set_status('delivered')  # not a shipping email either
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_django_admin_shipping_emails_the_customer_too(self, viva, get_txn):
+        from django.contrib import admin as django_admin
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.test import RequestFactory
+        from orders.admin import OrderAdmin
+        self.guest_checkout()
+        get_txn.return_value = charged(CODES[0], 53.5)
+        self.pay(CODES[0], 53.5)
+        mail.outbox.clear()
+        order = Order.objects.get()
+        request = RequestFactory().post('/admin/')
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        order.status = Order.Status.SHIPPED
+        with self.captureOnCommitCallbacks(execute=True):
+            OrderAdmin(Order, django_admin.site).save_model(request, order, None, True)
+        self.assertEqual([m.subject for m in mail.outbox], [f'Your Senario order #{order.pk} is on its way'])
+
+    def test_a_shop_alert_failure_does_not_lose_the_order(self, viva, get_txn):
+        self.guest_checkout()
+        get_txn.return_value = charged(CODES[0], 53.5)
+        real_send = __import__('users.emails', fromlist=['send_branded_email']).send_branded_email
+
+        def alert_fails(to, subject, *args, **kwargs):
+            if subject.startswith('New order'):
+                raise RuntimeError('mail down')
+            return real_send(to, subject, *args, **kwargs)
+
+        with patch('orders.emails.send_branded_email', side_effect=alert_fails):
+            with self.assertLogs('orders.emails', level='ERROR') as logs:
+                self.pay(CODES[0], 53.5)
+        self.assertIn('new-order alert', logs.output[0])
+        self.assertEqual(Order.objects.get().status, Order.Status.CONFIRMED)
+        self.assertEqual([m.to for m in mail.outbox], [['guest@example.com']])  # customer still emailed

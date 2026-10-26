@@ -1,0 +1,32 @@
+{% extends "users/email/base.html" %}
+{% block title %}New order #{{ order.pk }}{% endblock %}
+{% block greeting %}{% endblock %}
+{% block intro %}<p style="margin:0 0 16px 0;">
+                A new order is paid: <strong>#{{ order.pk }}</strong>, {{ total }}.
+              </p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px; border-collapse:collapse; margin:0 0 16px 0;">
+                {% for item in items %}
+                <tr>
+                  <td style="padding:8px 0; border-bottom:1px solid #e4e4e7;">{{ item.qty }} &times; {{ item.name }}{% if item.size %} <span style="color:#71717a;">({{ item.size }})</span>{% endif %}</td>
+                  <td align="right" style="padding:8px 0; border-bottom:1px solid #e4e4e7; white-space:nowrap;">{{ item.subtotal }}</td>
+                </tr>
+                {% endfor %}
+                <tr>
+                  <td style="padding:8px 0; border-bottom:1px solid #e4e4e7;">Shipping</td>
+                  <td align="right" style="padding:8px 0; border-bottom:1px solid #e4e4e7; white-space:nowrap;">{{ shipping }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0 0 0;"><strong>Total paid</strong></td>
+                  <td align="right" style="padding:10px 0 0 0; white-space:nowrap;"><strong>{{ total }}</strong></td>
+                </tr>
+              </table>
+              <p style="margin:0 0 16px 0; font-size:14px; color:#3f3f46;">
+                <strong>Customer</strong><br>
+                {{ order.full_name }}{% if not order.user %} (guest){% endif %}<br>{{ customer_email }}{% if order.phone %}<br>{{ order.phone }}{% endif %}
+              </p>
+              <p style="margin:0 0 16px 0; font-size:14px; color:#3f3f46;">
+                <strong>Ship to</strong><br>
+                {{ order.address }}<br>{{ order.postal_code }} {{ order.city }}, {{ order.country }}
+              </p>{% endblock %}
+{% block action_label %}Open the Dashboard{% endblock %}
+{% block note %}Set the order to "shipped" in the dashboard when it goes out: the customer is emailed then.{% endblock %}
