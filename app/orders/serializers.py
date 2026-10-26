@@ -1,6 +1,5 @@
-from django.db import transaction
 from rest_framework import serializers
-from .lines import BadItems, Line, create_order, resolve_items
+from .lines import BadItems, Line, resolve_items
 from .models import Order, OrderItem
 from .stock import unavailable_items
 from cart.models import Cart
@@ -68,8 +67,9 @@ class _OrderDetailsSerializer(serializers.Serializer):
         return data
 
 
-class CreateOrderSerializer(_OrderDetailsSerializer):
-    """A signed-in customer's order, from their server-side cart."""
+class CheckoutSerializer(_OrderDetailsSerializer):
+    """A signed-in customer's checkout, from their server-side cart.
+    `validated_data['items']` holds the checked lines."""
 
     def validate(self, attrs):
         user = self.context['request'].user
@@ -94,22 +94,13 @@ class CreateOrderSerializer(_OrderDetailsSerializer):
             raise serializers.ValidationError(
                 'Some items are no longer available: ' + ', '.join(unavailable)
             )
-        self._cart = cart
-        self._lines = [Line(item.product, item.variant, item.qty) for item in items]
+        attrs['items'] = [Line(item.product, item.variant, item.qty) for item in items]
         attrs['email'] = attrs.get('email') or user.email
         return attrs
 
-    def create(self, validated_data):
-        # All-or-nothing: an error halfway must not leave a partial order
-        # behind, or empty the cart without an order to show for it.
-        with transaction.atomic():
-            order = create_order(self._lines, self.details(validated_data), user=validated_data['user'])
-            self._cart.items.all().delete()
-        return order
 
-
-class GuestOrderSerializer(_OrderDetailsSerializer):
-    """An order without an account: the items come from the browser's cart."""
+class GuestCheckoutSerializer(_OrderDetailsSerializer):
+    """A checkout without an account: the items come from the browser's cart."""
     # No account to fall back on: the receipt and order link go here.
     email = serializers.EmailField()
     items = serializers.JSONField()
@@ -121,7 +112,8 @@ class GuestOrderSerializer(_OrderDetailsSerializer):
             raise serializers.ValidationError(str(exc))
         if not lines and not dropped:
             raise serializers.ValidationError('Your cart is empty.')
-        problems = [f'{line.product.name}: {line.problem}' for line in lines if line.problem]
+        # Each problem is a sentence ("Sold out."); drop its full stop before ours.
+        problems = [f'{line.product.name}: {line.problem.rstrip(".")}' for line in lines if line.problem]
         if dropped or problems:
             raise serializers.ValidationError(
                 'Some items are no longer available'
@@ -130,11 +122,14 @@ class GuestOrderSerializer(_OrderDetailsSerializer):
             )
         return lines
 
-    def create(self, validated_data):
-        return create_order(validated_data['items'], self.details(validated_data))
-
 
 class OrderStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ('status',)
+
+    def validate_status(self, value):
+        # Orders only exist once paid; "pending" is left on old orders only.
+        if value == Order.Status.PENDING and getattr(self.instance, 'status', None) != Order.Status.PENDING:
+            raise serializers.ValidationError('An order can no longer be set back to pending.')
+        return value

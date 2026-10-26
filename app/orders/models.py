@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.conf import settings
 from products.models import Product, ProductVariant
@@ -32,6 +33,14 @@ class Order(models.Model):
 
     def __str__(self):
         return f'Order #{self.pk} — {self.status}'
+
+    def clean(self):
+        # Run by Django admin forms. Orders only exist once paid, so staff
+        # can't make one "pending"; old pending orders may stay as they are.
+        if self.status == self.Status.PENDING:
+            old = Order.objects.filter(pk=self.pk).values_list('status', flat=True).first() if self.pk else None
+            if old != self.Status.PENDING:
+                raise ValidationError({'status': 'An order can no longer be set to pending.'})
 
     @property
     def is_guest(self):

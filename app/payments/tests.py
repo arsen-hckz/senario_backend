@@ -45,56 +45,6 @@ class PaymentsTests(APITestCase):
 
     # --- checkout ---
 
-    def test_checkout_requires_auth(self):
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_checkout_rejects_another_users_order(self):
-        self.auth(self.other_user)
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    @patch('payments.viva_client.create_order')
-    def test_checkout_creates_payment_and_returns_checkout_url(self, mock_create_order):
-        mock_create_order.return_value = '123456789012345'
-        self.auth(self.user)
-
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertIn('123456789012345', res.data['checkout_url'])
-        payment = Payment.objects.get(order=self.order)
-        self.assertEqual(payment.viva_order_code, '123456789012345')
-        self.assertEqual(payment.status, Payment.Status.PENDING)
-        self.assertEqual(payment.amount, self.order.total)
-        mock_create_order.assert_called_once()
-        self.assertEqual(mock_create_order.call_args.kwargs['amount_cents'], 2450)
-
-    @patch('payments.viva_client.create_order')
-    def test_checkout_rejects_already_paid_order(self, mock_create_order):
-        Payment.objects.create(
-            order=self.order, viva_order_code='1', amount=self.order.total,
-            status=Payment.Status.PAID,
-        )
-        self.auth(self.user)
-
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        mock_create_order.assert_not_called()
-
-    @patch('payments.viva_client.create_order')
-    def test_checkout_returns_502_on_viva_error(self, mock_create_order):
-        mock_create_order.side_effect = VivaError('boom')
-        self.auth(self.user)
-
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-
-        self.assertEqual(res.status_code, status.HTTP_502_BAD_GATEWAY)
-        self.assertFalse(Payment.objects.filter(order=self.order).exists())
-
-    # --- webhook ---
-
     def test_webhook_get_returns_verification_key(self):
         with self.settings(VIVA_WEBHOOK_VERIFICATION_KEY='verify-me'):
             res = self.client.get('/api/payments/webhook/viva/')
@@ -159,23 +109,6 @@ class PaymentsTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         payment.refresh_from_db()
         self.assertEqual(payment.status, Payment.Status.PAID)
-
-    @patch('payments.viva_client.create_order')
-    def test_repeated_checkout_reuses_the_recent_attempt(self, mock_create_order):
-        mock_create_order.side_effect = ['111111111111111', '222222222222222']
-        self.auth(self.user)
-        first = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-        second = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-        self.assertEqual(first.data['checkout_url'], second.data['checkout_url'])
-        self.assertEqual(mock_create_order.call_count, 1)
-        self.assertEqual(Payment.objects.count(), 1)
-
-        # Once that attempt is older than the reuse window, a fresh one is made.
-        from datetime import timedelta
-        from django.utils import timezone
-        Payment.objects.update(created_at=timezone.now() - timedelta(minutes=10))
-        third = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-        self.assertIn('222222222222222', third.data['checkout_url'])
 
     @patch('payments.viva_client.get_transaction')
     def test_webhook_verification_is_capped_per_order_code(self, mock_get_transaction):
@@ -252,28 +185,6 @@ class PaymentsTests(APITestCase):
         self.assertEqual(to_cents(19.99), 1999)
         self.assertEqual(to_cents(0.1), 10)
         self.assertEqual(to_cents(Decimal('24.50')), 2450)
-
-    @patch('payments.viva_client.create_order')
-    def test_checkout_rejects_cancelled_order(self, mock_create_order):
-        self.order.status = Order.Status.CANCELLED
-        self.order.save()
-        self.auth(self.user)
-
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        mock_create_order.assert_not_called()
-
-    @patch('payments.viva_client.create_order')
-    def test_checkout_rejects_order_when_stock_ran_out(self, mock_create_order):
-        self.variant.stock = 1  # order wants 2
-        self.variant.save()
-        self.auth(self.user)
-
-        res = self.client.post(f'/api/payments/checkout/{self.order.id}/')
-
-        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
-        mock_create_order.assert_not_called()
 
     @patch('payments.viva_client.get_transaction')
     def test_webhook_records_payment_even_if_oversold(self, mock_get_transaction):

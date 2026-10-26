@@ -1,14 +1,9 @@
 """Item lists sent by the browser: a guest's cart lives in localStorage, so
-every quote and guest order re-reads products, prices and stock from the
+every quote and guest checkout re-reads products, prices and stock from the
 database and trusts nothing but the ids and quantities."""
-import secrets
 from dataclasses import dataclass
 
-from django.db import transaction
-
 from products.models import Product, ProductVariant
-from .models import Order, OrderItem
-from .shipping import shipping_for
 from .stock import stock_row
 
 MAX_QTY = 99
@@ -92,30 +87,3 @@ def resolve_items(raw):
         lines.append(line)
     return lines, dropped
 
-
-def create_order(lines, details, user=None):
-    """An order for `lines` (products already checked). Guest orders
-    (no user) get a secret `access_token` instead of an owner."""
-    with transaction.atomic():
-        subtotal = sum(line.subtotal for line in lines)
-        shipping = shipping_for(subtotal)
-        order = Order.objects.create(
-            user=user,
-            access_token='' if user else secrets.token_urlsafe(32),
-            total=subtotal + shipping,
-            shipping=shipping,
-            **details,
-        )
-        OrderItem.objects.bulk_create([
-            OrderItem(
-                order=order,
-                product=line.product,
-                variant=line.variant,
-                product_name=line.product.name,
-                size=line.variant.size if line.variant else '',
-                price=line.product.effective_price,
-                qty=line.qty,
-            )
-            for line in lines
-        ])
-    return order

@@ -1,22 +1,11 @@
 from decimal import Decimal
-from unittest.mock import patch
 
-from django.core import mail
 from django.core.cache import cache
 from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from payments.models import Payment
 from products.models import Product, ProductVariant
-from users.models import User
-from .models import Order
-
-ADDRESS = {
-    'full_name': 'Guest Buyer', 'email': 'guest@example.com', 'phone': '+30 690 000 0000',
-    'address': 'Addr 1', 'city': 'Athens', 'country': 'Greece', 'postal_code': '11111',
-}
-TXN = '11111111-1111-4111-8111-111111111111'
 
 
 @override_settings(SHIPPING_FEE='3.50', FREE_SHIPPING_OVER='50')
@@ -74,91 +63,3 @@ class GuestCartQuoteTests(APITestCase):
             self.assertEqual(self.quote(junk).status_code, status.HTTP_400_BAD_REQUEST, junk)
 
 
-@override_settings(SHIPPING_FEE='3.50', FREE_SHIPPING_OVER='50')
-class GuestOrderTests(APITestCase):
-    def setUp(self):
-        cache.clear()
-        self.tee = Product.objects.create(name='Tee', slug='tee', price=Decimal('20.00'), stock=5)
-
-    def place(self, items=None, **overrides):
-        body = dict(ADDRESS, items=items if items is not None else [{'product_id': self.tee.id, 'qty': 2}], **overrides)
-        return self.client.post('/api/orders/guest/', body, format='json')
-
-    def detail(self, order_id, token):
-        headers = {'HTTP_X_ORDER_TOKEN': token} if token is not None else {}
-        return self.client.get(f'/api/orders/guest/{order_id}/', **headers)
-
-    def test_places_an_order_without_an_account(self):
-        res = self.place()
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        order = Order.objects.get()
-        self.assertIsNone(order.user)
-        self.assertEqual((order.total, order.shipping, order.email), (Decimal('43.50'), Decimal('3.50'), 'guest@example.com'))
-        self.assertEqual(res.data['access_token'], order.access_token)
-        self.assertGreaterEqual(len(order.access_token), 40)
-        self.assertTrue(res.data['is_guest'])
-
-    def test_email_is_required_and_bad_carts_are_refused(self):
-        self.assertEqual(self.place(email='').status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(self.place(items=[]).status_code, status.HTTP_400_BAD_REQUEST)
-        res = self.place(items=[{'product_id': self.tee.id, 'qty': 6}])
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('Only 5 left in stock', str(res.data))
-        self.assertFalse(Order.objects.exists())
-
-    def test_delivers_only_within_greece(self):
-        res = self.place(country='Cyprus')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('only deliver within Greece', str(res.data))
-        self.assertFalse(Order.objects.exists())
-        self.assertEqual(self.place(country=' gr ').status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Order.objects.get().country, 'Greece')
-
-    def test_order_opens_only_with_its_secret(self):
-        token = self.place().data['access_token']
-        order = Order.objects.get()
-        self.assertEqual(self.detail(order.id, token).status_code, status.HTTP_200_OK)
-        self.assertNotIn('access_token', self.detail(order.id, token).data)
-        for wrong in (None, '', 'x' * 43, token[:-1]):
-            self.assertEqual(self.detail(order.id, wrong).status_code, status.HTTP_404_NOT_FOUND, wrong)
-
-    def test_account_orders_are_never_reachable_as_guest_orders(self):
-        user = User.objects.create_user(email='a@example.com', password='Str0ng-Pass-123')
-        order = Order.objects.create(user=user, total=10, full_name='A', address='a', city='c', country='g', postal_code='1')
-        self.assertEqual(self.detail(order.id, '').status_code, status.HTTP_404_NOT_FOUND)
-        res = self.client.post(f'/api/payments/guest-checkout/{order.id}/', HTTP_X_ORDER_TOKEN='')
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    @patch('payments.viva_client.create_order', return_value='123456789012345')
-    def test_guest_checkout_charges_the_total_with_shipping(self, create_order):
-        token = self.place().data['access_token']
-        order = Order.objects.get()
-        res = self.client.post(f'/api/payments/guest-checkout/{order.id}/', HTTP_X_ORDER_TOKEN='wrong')
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-        res = self.client.post(f'/api/payments/guest-checkout/{order.id}/', HTTP_X_ORDER_TOKEN=token)
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertIn('123456789012345', res.data['checkout_url'])
-        kwargs = create_order.call_args.kwargs
-        self.assertEqual((kwargs['amount_cents'], kwargs['customer_email']), (4350, 'guest@example.com'))
-
-    @override_settings(FRONTEND_URL='https://shop.example')
-    @patch('payments.viva_client.get_transaction')
-    def test_paid_guest_order_is_confirmed_and_emailed_with_its_link(self, get_transaction):
-        token = self.place().data['access_token']
-        order = Order.objects.get()
-        Payment.objects.create(order=order, viva_order_code='555', amount=order.total)
-        get_transaction.return_value = {'statusId': 'F', 'orderCode': '555', 'amount': 43.5}
-        with self.captureOnCommitCallbacks(execute=True):
-            self.client.post('/api/payments/webhook/viva/', {
-                'EventTypeId': 1796, 'EventData': {'OrderCode': '555', 'TransactionId': TXN},
-            }, format='json')
-        order.refresh_from_db()
-        self.tee.refresh_from_db()
-        self.assertEqual((order.status, self.tee.stock), ('confirmed', 3))
-        self.assertEqual(mail.outbox[-1].to, ['guest@example.com'])
-        self.assertIn(f'https://shop.example/order?id={order.id}#t={token}', mail.outbox[-1].body)
-        self.assertIn('Shipping  €3.50', mail.outbox[-1].body)
-
-    def test_guest_orders_are_rate_limited_per_ip(self):
-        codes = [self.place(items=[{'product_id': self.tee.id, 'qty': 1}]).status_code for _ in range(21)]
-        self.assertEqual(codes[-1], status.HTTP_429_TOO_MANY_REQUESTS)

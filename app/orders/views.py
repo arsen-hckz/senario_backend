@@ -3,13 +3,11 @@ import hmac
 from django.http import Http404
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions
 from rest_framework.response import Response
-from rest_framework.throttling import UserRateThrottle
 
-from users.throttles import _PerIPRateThrottle
 from .models import Order
-from .serializers import GuestOrderSerializer, OrderSerializer, CreateOrderSerializer, OrderStatusSerializer
+from .serializers import OrderSerializer, OrderStatusSerializer
 from .shipping import shipping_rule
 from .status import apply_status_change
 
@@ -30,24 +28,6 @@ class OrderDetailView(generics.RetrieveAPIView):
         return get_object_or_404(Order, pk=self.kwargs['pk'], user=self.request.user)
 
 
-class CreateOrderRateThrottle(UserRateThrottle):
-    # Nobody places 20 orders an hour; past that it's a script filling the
-    # orders table (and the staff order list) with pending orders.
-    scope = 'order-create'
-
-
-class CreateOrderView(generics.CreateAPIView):
-    permission_classes = (permissions.IsAuthenticated,)
-    serializer_class = CreateOrderSerializer
-    throttle_classes = [CreateOrderRateThrottle]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        order = serializer.save(user=request.user)
-        return Response(OrderSerializer(order, context={'request': request}).data, status=status.HTTP_201_CREATED)
-
-
 def guest_order_or_404(request, pk, queryset=None):
     """The guest order `pk`, if the request carries its secret in the
     X-Order-Token header. Account orders are never reachable this way."""
@@ -57,26 +37,6 @@ def guest_order_or_404(request, pk, queryset=None):
     if order is None or not token or not hmac.compare_digest(order.access_token, token):
         raise Http404
     return order
-
-
-class GuestOrderRateThrottle(_PerIPRateThrottle):
-    scope = 'guest-order'
-
-
-class GuestOrderCreateView(generics.CreateAPIView):
-    authentication_classes = ()
-    permission_classes = (permissions.AllowAny,)
-    serializer_class = GuestOrderSerializer
-    throttle_classes = [GuestOrderRateThrottle]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        order = serializer.save()
-        data = OrderSerializer(order, context={'request': request}).data
-        # Shown once: the browser keeps it to pay and to check the order.
-        data['access_token'] = order.access_token
-        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class GuestOrderDetailView(generics.RetrieveAPIView):

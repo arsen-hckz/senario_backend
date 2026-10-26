@@ -1,12 +1,11 @@
+import hmac
 import logging
 import uuid
-from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction as db_transaction
-from django.shortcuts import get_object_or_404
-from django.utils import timezone
+from django.http import Http404
 from rest_framework import permissions, status
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.response import Response
@@ -14,13 +13,14 @@ from rest_framework.views import APIView
 
 from orders.emails import send_order_confirmation
 from orders.models import Order
+from orders.serializers import CheckoutSerializer, GuestCheckoutSerializer
 from orders.status import apply_status_change
-from orders.views import guest_order_or_404
+from orders.stock import decrement_order_stock
 from users.throttles import _PerIPRateThrottle
-from orders.stock import decrement_order_stock, order_unavailable_items
 
 from . import viva_client
-from .models import Payment
+from .checkout import create_paid_order, open_checkout
+from .models import Checkout, Payment
 from .viva_client import VivaError, VivaTransactionNotFound
 
 logger = logging.getLogger(__name__)
@@ -35,11 +35,6 @@ TRANSACTION_REVERSAL_CREATED = 1797
 # if Viva says the transaction it names is one of these, so a charge's own
 # id posted as a "reversal" can't cancel a paid order.
 REFUND_TRANSACTION_TYPES = {4, 7, 11, 18}
-
-# A checkout started this recently is handed out again instead of creating
-# another Viva order: a double click or a quick retry shouldn't leave a trail
-# of abandoned payment attempts. Well inside the checkout page's lifetime.
-REUSE_CHECKOUT_FOR = timedelta(minutes=5)
 
 # Verification calls to Viva per order code per 10 minutes. Real deliveries
 # need one or two; past that it's someone replaying their own order code.
@@ -58,60 +53,46 @@ def _is_guid(value):
     return True
 
 
-def start_checkout(order, customer_email):
-    """A Viva checkout URL for `order`, or an error Response."""
-    if order.payments.filter(status=Payment.Status.PAID).exists():
-        return Response(
-            {'detail': 'This order has already been paid.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if order.status != Order.Status.PENDING:
-        return Response(
-            {'detail': 'This order can no longer be paid.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    unavailable = order_unavailable_items(order)
-    if unavailable:
-        return Response(
-            {'detail': 'Some items are no longer available: ' + ', '.join(unavailable)},
-            status=status.HTTP_409_CONFLICT,
-        )
-
-    recent = order.payments.filter(
-        status=Payment.Status.PENDING, created_at__gte=timezone.now() - REUSE_CHECKOUT_FOR,
-    ).first()
-    if recent is not None:
-        return Response({'checkout_url': viva_client.checkout_url(recent.viva_order_code)})
-
+def start_payment(checkout):
+    """A Viva payment page for `checkout`, or an error Response. On an error
+    the checkout is deleted: nothing was charged and the cart is untouched."""
     try:
         order_code = viva_client.create_order(
-            amount_cents=viva_client.to_cents(order.total),
-            customer_trns=f'Order #{order.id} — {settings.BRAND_NAME}',
-            merchant_trns=str(order.id),
-            customer_email=customer_email,
-            customer_full_name=order.full_name,
+            amount_cents=viva_client.to_cents(checkout.total),
+            customer_trns=f'{settings.BRAND_NAME} order',
+            merchant_trns=f'Checkout {checkout.pk}',
+            customer_email=checkout.email,
+            customer_full_name=checkout.full_name,
         )
     except VivaError:
-        logger.exception('Failed to create Viva checkout order for Order #%s', order.id)
+        logger.exception('Failed to create Viva checkout order for Checkout #%s', checkout.pk)
+        checkout.delete()
         return Response(
             {'detail': 'Could not start checkout. Please try again.'},
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    Payment.objects.create(order=order, viva_order_code=order_code, amount=order.total)
-
-    return Response({'checkout_url': viva_client.checkout_url(order_code)})
+    Payment.objects.create(checkout=checkout, viva_order_code=order_code, amount=checkout.total)
+    return Response({
+        'checkout_id': checkout.pk,
+        'token': checkout.token,
+        'checkout_url': viva_client.checkout_url(order_code),
+    }, status=status.HTTP_201_CREATED)
 
 
 class CreateCheckoutView(APIView):
+    """Signed in: pay for the server-side cart. No order exists until Viva
+    confirms the payment, and the cart is only emptied then."""
     permission_classes = (permissions.IsAuthenticated,)
     throttle_classes = [CheckoutRateThrottle]
 
-    def post(self, request, order_id):
-        order = get_object_or_404(Order, pk=order_id, user=request.user)
-        return start_checkout(order, request.user.email)
+    def post(self, request):
+        serializer = CheckoutSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        lines = data.pop('items')
+        checkout = open_checkout(lines, serializer.details(data), user=request.user)
+        return start_payment(checkout)
 
 
 class GuestCheckoutRateThrottle(_PerIPRateThrottle):
@@ -119,13 +100,39 @@ class GuestCheckoutRateThrottle(_PerIPRateThrottle):
 
 
 class GuestCheckoutView(APIView):
+    """No account: pay for the items in the browser's cart."""
     authentication_classes = ()
     permission_classes = (permissions.AllowAny,)
     throttle_classes = [GuestCheckoutRateThrottle]
 
-    def post(self, request, order_id):
-        order = guest_order_or_404(request, order_id)
-        return start_checkout(order, order.email)
+    def post(self, request):
+        serializer = GuestCheckoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        lines = data.pop('items')
+        checkout = open_checkout(lines, serializer.details(data))
+        return start_payment(checkout)
+
+
+class CheckoutStatusView(APIView):
+    """What the return page polls: has the checkout become an order yet?
+    Opened with the checkout's secret in the X-Checkout-Token header."""
+    authentication_classes = ()
+    permission_classes = (permissions.AllowAny,)
+
+    def get(self, request, checkout_id):
+        token = request.headers.get('X-Checkout-Token', '')
+        checkout = Checkout.objects.select_related('order').filter(pk=checkout_id).first()
+        if checkout is None or not token or not hmac.compare_digest(checkout.token, token):
+            raise Http404
+        order = checkout.order
+        return Response({
+            'paid': order is not None,
+            'order_id': order.pk if order else None,
+            'order_status': order.status if order else None,
+            # A guest order opens with this same token; account orders are in My Orders.
+            'is_guest': checkout.user_id is None,
+        })
 
 
 class VivaWebhookView(APIView):
@@ -181,36 +188,56 @@ class VivaWebhookView(APIView):
             locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
             if locked_payment.status != Payment.Status.PENDING:
                 return Response(status=status.HTTP_200_OK)
-            # Lock the order too, so two payments for the same order (customer
-            # paid in two tabs) are processed one at a time.
-            order = Order.objects.select_for_update().get(pk=locked_payment.order_id)
             locked_payment.viva_transaction_id = str(transaction_id)
-
-            other_paid = order.payments.filter(status=Payment.Status.PAID).exclude(pk=locked_payment.pk).exists()
-            if other_paid or order.status != Order.Status.PENDING:
-                # The money was taken, but this order is already paid or was
-                # cancelled — flag it for a manual refund rather than
-                # confirming twice or decrementing stock again.
-                locked_payment.status = Payment.Status.REFUND_NEEDED
-                locked_payment.save(update_fields=['status', 'viva_transaction_id', 'updated_at'])
-                logger.error(
-                    'Payment #%s for Order #%s (status %s) needs a refund: order already paid or not pending',
-                    locked_payment.pk, order.pk, order.status,
-                )
+            if locked_payment.order_id is None:
+                order = self._order_for_checkout(locked_payment)
+            else:
+                order = self._confirm_pending_order(locked_payment)
+            if order is None:
                 return Response(status=status.HTTP_200_OK)
 
             locked_payment.status = Payment.Status.PAID
-            locked_payment.save(update_fields=['status', 'viva_transaction_id', 'updated_at'])
-
-            order.status = Order.Status.CONFIRMED
-            order.save(update_fields=['status', 'updated_at'])
-
-            decrement_order_stock(order, logger)
+            locked_payment.order = order
+            locked_payment.save(update_fields=['status', 'order', 'viva_transaction_id', 'updated_at'])
 
             # After commit: only email once the payment is really recorded.
             db_transaction.on_commit(lambda: send_order_confirmation(order, locked_payment.viva_transaction_id))
 
         return Response(status=status.HTTP_200_OK)
+
+    def _flag_refund(self, payment, reason, *args):
+        """The money was taken but no order can be confirmed for it."""
+        payment.status = Payment.Status.REFUND_NEEDED
+        payment.save(update_fields=['status', 'viva_transaction_id', 'updated_at'])
+        logger.error('Payment #%s needs a refund: ' + reason, payment.pk, *args)
+
+    def _order_for_checkout(self, payment):
+        """The new confirmed Order for the payment's checkout, or None
+        (the payment is then flagged for a refund)."""
+        checkout = Checkout.objects.select_for_update().filter(pk=payment.checkout_id).first()
+        if checkout is None:
+            self._flag_refund(payment, 'its checkout no longer exists (Viva order %s)', payment.viva_order_code)
+            return None
+        if checkout.order_id is not None:
+            self._flag_refund(payment, 'Checkout #%s was already paid as Order #%s', checkout.pk, checkout.order_id)
+            return None
+        return create_paid_order(checkout, logger)
+
+    def _confirm_pending_order(self, payment):
+        """Payments started before checkouts existed were taken against a
+        pending Order: confirm it, or None (the payment is flagged for a refund)."""
+        # Lock the order too, so two payments for the same order (customer
+        # paid in two tabs) are processed one at a time.
+        order = Order.objects.select_for_update().get(pk=payment.order_id)
+        other_paid = order.payments.filter(status=Payment.Status.PAID).exclude(pk=payment.pk).exists()
+        if other_paid or order.status != Order.Status.PENDING:
+            # Already paid or cancelled — don't confirm twice or take stock again.
+            self._flag_refund(payment, 'Order #%s (status %s) was already paid or not pending', order.pk, order.status)
+            return None
+        order.status = Order.Status.CONFIRMED
+        order.save(update_fields=['status', 'updated_at'])
+        decrement_order_stock(order, logger)
+        return order
 
     def _fetch_transaction(self, order_code, transaction_id):
         """(transaction, None), or (None, the Response to send)."""
@@ -258,18 +285,21 @@ class VivaWebhookView(APIView):
 
         if abs(viva_client.to_cents(txn['amount'])) != viva_client.to_cents(payment.amount):
             # Partial refund: the order may still be (partly) going out — staff decide.
-            logger.warning('Partial Viva refund %s on Order #%s (%s of %s): order left as is',
-                           transaction_id, payment.order_id, txn['amount'], payment.amount)
+            logger.warning('Partial Viva refund %s on Payment #%s (%s of %s): order left as is',
+                           transaction_id, payment.pk, txn['amount'], payment.amount)
             return Response(status=status.HTTP_200_OK)
 
         with db_transaction.atomic():
             locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
             if locked_payment.status not in (Payment.Status.PAID, Payment.Status.REFUND_NEEDED):
                 return Response(status=status.HTTP_200_OK)
-            order = Order.objects.select_for_update().get(pk=locked_payment.order_id)
             locked_payment.status = Payment.Status.REFUNDED
             locked_payment.save(update_fields=['status', 'updated_at'])
+            if locked_payment.order_id is None:
+                # Money that never became an order (see _flag_refund): nothing else to undo.
+                return Response(status=status.HTTP_200_OK)
 
+            order = Order.objects.select_for_update().get(pk=locked_payment.order_id)
             if order.status in (Order.Status.PENDING, Order.Status.CONFIRMED):
                 old_status = order.status
                 order.status = Order.Status.CANCELLED

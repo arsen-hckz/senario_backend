@@ -1,109 +1,14 @@
 from decimal import Decimal
-from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from cart.models import Cart, CartItem
 from products.models import Product
 from .models import Order, OrderItem
 
 User = get_user_model()
-
-ADDRESS = {
-    'full_name': 'Buyer Name', 'address': 'Addr 1', 'city': 'Athens',
-    'country': 'GR', 'postal_code': '11111', 'phone': '+30 690 000 0000',
-}
-
-
-class CreateOrderTests(APITestCase):
-    def setUp(self):
-        cache.clear()
-        self.user = User.objects.create_user(email='buyer@example.com', password='testpass123')
-        self.client.force_authenticate(user=self.user)
-        self.product = Product.objects.create(
-            name='Tee', slug='tee', price=Decimal('20.00'), sale_price=Decimal('15.00'), stock=5,
-        )
-        self.cart = Cart.objects.create(user=self.user)
-        CartItem.objects.create(cart=self.cart, product=self.product, qty=2)
-
-    def create(self):
-        return self.client.post('/api/orders/create/', ADDRESS, format='json')
-
-    def test_phone_is_required_and_email_defaults_to_account(self):
-        res = self.client.post('/api/orders/create/', dict(ADDRESS, phone=''), format='json')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('phone', res.data)
-        res = self.client.post('/api/orders/create/', dict(ADDRESS, phone='call me'), format='json')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-        res = self.create()
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual((res.data['email'], res.data['phone']), ('buyer@example.com', '+30 690 000 0000'))
-
-    def test_order_creation_is_rate_limited_per_account(self):
-        codes = []
-        for _ in range(21):
-            CartItem.objects.get_or_create(cart=self.cart, product=self.product, defaults={'qty': 1})
-            codes.append(self.create().status_code)
-        self.assertEqual(codes[:20], [status.HTTP_201_CREATED] * 20)
-        self.assertEqual(codes[20], status.HTTP_429_TOO_MANY_REQUESTS)
-
-    def test_checkout_email_overrides_account_email(self):
-        res = self.client.post('/api/orders/create/', dict(ADDRESS, email='gift@example.com'), format='json')
-        self.assertEqual(Order.objects.get(pk=res.data['id']).email, 'gift@example.com')
-
-    def test_sized_item_without_size_cannot_be_ordered(self):
-        from products.models import ProductVariant
-        ProductVariant.objects.create(product=self.product, size='M', stock=5)
-        res = self.create()
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('Please choose a size for: Tee', str(res.data))
-        self.assertFalse(Order.objects.exists())
-
-        cart = self.client.get('/api/cart/').data
-        self.assertTrue(cart['items'][0]['needs_size'])
-
-    def test_creates_order_with_server_side_total_and_empties_cart(self):
-        res = self.create()
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        order = Order.objects.get()
-        # 2 x 15.00 sale price, plus the delivery fee below FREE_SHIPPING_OVER.
-        self.assertEqual((order.shipping, order.total), (Decimal('3.50'), Decimal('33.50')))
-        self.assertEqual(res.data['subtotal'], '30.00')
-        self.assertEqual(order.items.get().price, Decimal('15.00'))
-        self.assertFalse(self.cart.items.exists())
-
-    @override_settings(SHIPPING_FEE='4.00', FREE_SHIPPING_OVER='30')
-    def test_shipping_is_free_from_the_threshold(self):
-        self.create()
-        order = Order.objects.get()
-        self.assertEqual((order.shipping, order.total), (Decimal('0.00'), Decimal('30.00')))
-
-    def test_rejects_when_stock_ran_out(self):
-        self.product.stock = 1
-        self.product.save()
-        res = self.create()
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertFalse(Order.objects.exists())
-        self.assertTrue(self.cart.items.exists())
-
-    def test_rejects_deactivated_product(self):
-        self.product.is_active = False
-        self.product.save()
-        res = self.create()
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertFalse(Order.objects.exists())
-
-    def test_failure_midway_leaves_no_partial_order_and_keeps_cart(self):
-        with patch.object(OrderItem.objects, 'bulk_create', side_effect=RuntimeError('boom')):
-            with self.assertRaises(RuntimeError):
-                self.create()
-        self.assertFalse(Order.objects.exists())
-        self.assertTrue(self.cart.items.exists())
 
 
 class AdminOrderStatusTests(APITestCase):
@@ -138,8 +43,26 @@ class AdminOrderStatusTests(APITestCase):
         res = self.set_status('cancelled')
         self.assertEqual(self.variant.stock, 5)
         self.assertFalse(res.data['refund_needed'])
+
+    def test_orders_cannot_be_set_back_to_pending(self):
+        # setUp's order is an old-style pending one: it may stay pending.
         self.set_status('pending')
-        self.assertEqual(self.variant.stock, 5)
+        self.set_status('confirmed')
+        res = self.client.patch(f'/api/orders/admin/{self.order.pk}/', {'status': 'pending'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.order.refresh_from_db()
+        self.variant.refresh_from_db()
+        self.assertEqual((self.order.status, self.variant.stock), (Order.Status.CONFIRMED, 3))
+
+    def test_django_admin_refuses_pending_too(self):
+        from django.core.exceptions import ValidationError
+        self.order.full_clean()  # old pending order, unchanged: fine
+        Order.objects.filter(pk=self.order.pk).update(status=Order.Status.CANCELLED)
+        self.order.status = Order.Status.PENDING
+        with self.assertRaises(ValidationError):
+            self.order.full_clean()
+        with self.assertRaises(ValidationError):
+            Order(total=1, full_name='A', address='B', city='C', country='GR', postal_code='1').full_clean()
 
     def test_cancelling_a_viva_paid_order_flags_the_refund(self):
         from payments.models import Payment

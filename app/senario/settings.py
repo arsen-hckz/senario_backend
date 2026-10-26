@@ -134,8 +134,6 @@ REST_FRAMEWORK = {
         'password-reset-confirm': '20/hour',
         'password-change': '5/min',
         'checkout': '20/hour',
-        'order-create': '20/hour',
-        'guest-order': '20/hour',
         'guest-checkout': '20/hour',
     },
 }
@@ -175,10 +173,10 @@ SIMPLE_JWT = {
 }
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost').split(',')
-# Guest orders are opened with their secret in this header (never the URL,
-# which ends up in access logs).
+# Guest orders and checkouts are opened with their secret in these headers
+# (never the URL, which ends up in access logs).
 from corsheaders.defaults import default_headers
-CORS_ALLOW_HEADERS = (*default_headers, 'x-order-token')
+CORS_ALLOW_HEADERS = (*default_headers, 'x-order-token', 'x-checkout-token')
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
