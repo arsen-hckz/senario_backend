@@ -2,7 +2,7 @@ django==5.2.18
 djangorestframework==3.18.3
 djangorestframework-simplejwt==5.5.1
 django-cors-headers==4.9.0
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.13
 redis==5.0.8
 django-redis==5.4.0
 gunicorn==22.0.0
